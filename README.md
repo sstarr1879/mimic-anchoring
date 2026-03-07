@@ -1,5 +1,8 @@
 # Measuring and Mitigating First Impression Bias in ICU Patient Monitoring
 
+![python](https://img.shields.io/badge/python-3.11+-green)
+![status](https://img.shields.io/badge/status-experimental-orange)
+
 This project investigates **anchoring bias** (first impression bias) in large language models used for ICU sepsis prediction. When a patient appears stable at admission, both human clinicians and AI systems tend to lock onto "this patient is fine" — even as later vital signs suggest developing sepsis. We measure this effect in LLaMA 3.1 8B and test interventions to mitigate it.
 
 ## Three-Part Measurement Framework
