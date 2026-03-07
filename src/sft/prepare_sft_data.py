@@ -1,8 +1,22 @@
 """
-Phase 3a: Prepare SFT training data for LoRA fine-tuning.
+Phase 3a: Prepare trajectory-aware SFT training data for LoRA fine-tuning.
 
-Converts patient timelines + SOFA-based ground truth into
-instruction-tuning format for LLaMA 3.1 8B.
+Each training example is a full multi-turn conversation representing an
+expert trace through a patient's ICU stay. The model learns not just to
+assess risk at a point in time, but to *revise its beliefs correctly*
+as new evidence arrives — including explicitly acknowledging when prior
+assessments were wrong and why.
+
+Format:
+  system → You are an ICU monitor...
+  user   → Hour 0 vitals...
+  assistant → RISK: 0.15 / REASONING: stable...
+  user   → Hour 1 vitals...
+  assistant → RISK: 0.18 / REASONING: slight uptick, revising from 0.15...
+  ...
+  user   → Hour 12 vitals...
+  assistant → RISK: 0.72 / REASONING: significant deterioration since hour 8,
+              revising sharply upward from 0.45 because lactate doubled...
 """
 
 import pandas as pd
@@ -13,101 +27,206 @@ from pathlib import Path
 import yaml
 
 from src.prompts.templates import (
-    SYSTEM_PROMPT, build_timeline_prompt, FEATURE_DISPLAY_NAMES,
+    SYSTEM_PROMPT, format_hour_observations, FEATURE_DISPLAY_NAMES,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def sofa_to_risk_label(sofa_score, max_sofa=15):
+TRAJECTORY_SYSTEM_PROMPT = """You are an ICU patient monitoring system performing continuous sepsis surveillance. You receive vital signs and lab values hour-by-hour and must maintain a running sepsis risk assessment.
+
+At each new observation, you must:
+1. State your updated sepsis risk probability (0.0 to 1.0)
+2. Explicitly reference your previous assessment and explain what changed
+3. If the evidence contradicts your prior assessment, acknowledge the revision and explain why
+
+Format your response exactly as:
+RISK: <probability>
+PREVIOUS: <your last risk estimate, or "N/A" if first assessment>
+DELTA: <change from previous, e.g. "+0.15" or "-0.05">
+REASONING: <explain what new evidence changed your assessment and why>"""
+
+
+def sofa_to_risk_label(sofa_score):
     """Convert SOFA score to a normalized risk probability."""
-    # Sigmoid-like mapping centered around SOFA=2 (sepsis threshold)
     return 1.0 / (1.0 + np.exp(-0.5 * (sofa_score - 2)))
 
 
-def generate_target_response(risk, hour, patient_hours, sofa_at_hour):
+def describe_trend(current_val, prev_val, feature_name):
+    """Describe the trend of a feature between two timepoints."""
+    if prev_val is None or np.isnan(prev_val) or np.isnan(current_val):
+        return None
+    diff = current_val - prev_val
+    pct = abs(diff / prev_val) * 100 if prev_val != 0 else 0
+
+    if pct < 5:
+        return f"{feature_name} stable"
+    elif diff > 0:
+        return f"{feature_name} increased ({prev_val:.1f} -> {current_val:.1f})"
+    else:
+        return f"{feature_name} decreased ({prev_val:.1f} -> {current_val:.1f})"
+
+
+def generate_expert_response(risk, prev_risk, hour, current_row, prev_row, patient_hours):
     """
-    Generate a target response for SFT training.
-
-    Uses clinical heuristics to create reasonable reasoning text
-    based on the actual vital signs and SOFA score.
+    Generate an expert trace response that explicitly revises from the prior assessment.
+    This teaches the model HOW to update beliefs, not just what the right answer is.
     """
-    row = patient_hours[patient_hours["HOUR"] == hour]
-    if len(row) == 0:
-        return f"RISK: {risk:.2f}\nREASONING: Insufficient data for detailed assessment."
+    delta = risk - prev_risk if prev_risk is not None else 0.0
+    prev_str = f"{prev_risk:.2f}" if prev_risk is not None else "N/A"
+    delta_str = f"{delta:+.2f}" if prev_risk is not None else "+0.00"
 
-    row = row.iloc[0]
+    # Identify what changed since last observation
+    trend_notes = []
+    feature_cols = [c for c in current_row.index if c in FEATURE_DISPLAY_NAMES]
 
-    # Build reasoning from available features
+    if prev_row is not None:
+        for feat in feature_cols:
+            curr_val = current_row.get(feat)
+            prev_val = prev_row.get(feat)
+            if pd.notna(curr_val) and pd.notna(prev_val):
+                trend = describe_trend(curr_val, prev_val, FEATURE_DISPLAY_NAMES[feat])
+                if trend and "stable" not in trend:
+                    trend_notes.append(trend)
+
+    # Build clinical reasoning
     observations = []
-    if "HR" in row.index and pd.notna(row.get("HR")):
-        hr = row["HR"]
+    if "HR" in current_row.index and pd.notna(current_row.get("HR")):
+        hr = current_row["HR"]
         if hr > 100:
             observations.append(f"tachycardia (HR {hr:.0f})")
-        elif hr < 60:
-            observations.append(f"bradycardia (HR {hr:.0f})")
-        else:
-            observations.append(f"normal heart rate (HR {hr:.0f})")
-
-    if "MAP" in row.index and pd.notna(row.get("MAP")):
-        m = row["MAP"]
+        elif hr > 90:
+            observations.append(f"elevated heart rate (HR {hr:.0f})")
+    if "MAP" in current_row.index and pd.notna(current_row.get("MAP")):
+        m = current_row["MAP"]
         if m < 65:
             observations.append(f"hypotension (MAP {m:.0f})")
-        elif m < 70:
-            observations.append(f"borderline low MAP ({m:.0f})")
-        else:
-            observations.append(f"adequate perfusion (MAP {m:.0f})")
-
-    if "LACTATE" in row.index and pd.notna(row.get("LACTATE")):
-        lac = row["LACTATE"]
+    if "LACTATE" in current_row.index and pd.notna(current_row.get("LACTATE")):
+        lac = current_row["LACTATE"]
         if lac > 4:
             observations.append(f"severely elevated lactate ({lac:.1f})")
         elif lac > 2:
             observations.append(f"elevated lactate ({lac:.1f})")
-        else:
-            observations.append(f"normal lactate ({lac:.1f})")
-
-    if "WBC" in row.index and pd.notna(row.get("WBC")):
-        wbc = row["WBC"]
+    if "WBC" in current_row.index and pd.notna(current_row.get("WBC")):
+        wbc = current_row["WBC"]
         if wbc > 12:
             observations.append(f"leukocytosis (WBC {wbc:.1f})")
         elif wbc < 4:
             observations.append(f"leukopenia (WBC {wbc:.1f})")
-
-    if "TEMP_C" in row.index and pd.notna(row.get("TEMP_C")):
-        t = row["TEMP_C"]
+    if "TEMP_C" in current_row.index and pd.notna(current_row.get("TEMP_C")):
+        t = current_row["TEMP_C"]
         if t > 38.3:
             observations.append(f"fever ({t:.1f}C)")
-        elif t < 36:
-            observations.append(f"hypothermia ({t:.1f}C)")
-
-    if "CREATININE" in row.index and pd.notna(row.get("CREATININE")):
-        cr = row["CREATININE"]
+    if "CREATININE" in current_row.index and pd.notna(current_row.get("CREATININE")):
+        cr = current_row["CREATININE"]
         if cr > 2:
             observations.append(f"renal dysfunction (Cr {cr:.1f})")
 
-    if observations:
-        reasoning = f"Assessment based on: {', '.join(observations)}. "
-    else:
-        reasoning = "Limited observations available. "
+    # Construct reasoning that explicitly addresses belief revision
+    reasoning_parts = []
 
-    if risk > 0.7:
-        reasoning += "Multiple indicators suggest high sepsis risk requiring immediate attention."
-    elif risk > 0.4:
-        reasoning += "Some concerning trends warrant close monitoring for sepsis development."
+    if prev_risk is None:
+        # First assessment
+        if observations:
+            reasoning_parts.append(f"Initial assessment based on: {', '.join(observations)}.")
+        if risk < 0.3:
+            reasoning_parts.append("Vitals are within acceptable range. Low initial sepsis risk.")
+        elif risk < 0.6:
+            reasoning_parts.append("Some mildly concerning values. Moderate vigilance warranted.")
+        else:
+            reasoning_parts.append("Multiple concerning indicators on admission. Close monitoring required.")
     else:
-        reasoning += "Current indicators suggest relatively low sepsis risk."
+        # Revision — the key training signal
+        abs_delta = abs(delta)
+        if abs_delta < 0.05:
+            reasoning_parts.append(f"Minimal change from prior assessment of {prev_str}.")
+            if observations:
+                reasoning_parts.append(f"Current findings: {', '.join(observations)}.")
+            reasoning_parts.append("No significant revision warranted.")
+        elif delta > 0:
+            # Risk increasing — model must learn to revise UPWARD
+            reasoning_parts.append(
+                f"Revising upward from {prev_str} to {risk:.2f}."
+            )
+            if trend_notes:
+                reasoning_parts.append(f"Key changes: {'; '.join(trend_notes[:3])}.")
+            if observations:
+                reasoning_parts.append(f"Concerning findings: {', '.join(observations)}.")
+            if abs_delta > 0.2:
+                reasoning_parts.append(
+                    "This represents a significant revision. Prior assessment underestimated "
+                    "emerging risk — the new evidence substantially changes the clinical picture."
+                )
+        else:
+            # Risk decreasing
+            reasoning_parts.append(
+                f"Revising downward from {prev_str} to {risk:.2f}."
+            )
+            if trend_notes:
+                reasoning_parts.append(f"Improving trends: {'; '.join(trend_notes[:3])}.")
+            reasoning_parts.append("Clinical trajectory suggests improvement.")
 
-    return f"RISK: {risk:.2f}\nREASONING: {reasoning}"
+    reasoning = " ".join(reasoning_parts)
+
+    return (
+        f"RISK: {risk:.2f}\n"
+        f"PREVIOUS: {prev_str}\n"
+        f"DELTA: {delta_str}\n"
+        f"REASONING: {reasoning}"
+    )
+
+
+def build_expert_trace(patient_hours_sofa, step_interval=2):
+    """
+    Build a full multi-turn expert trace for one patient.
+
+    Args:
+        patient_hours_sofa: DataFrame with HOUR, SOFA, and vital/lab columns.
+        step_interval: Include every Nth hour to keep sequences manageable.
+
+    Returns:
+        List of messages [{role, content}, ...] for the full trajectory.
+    """
+    df = patient_hours_sofa.sort_values("HOUR").reset_index(drop=True)
+    hours = sorted(df["HOUR"].unique())
+
+    # Sample hours at interval, always include first and last
+    sampled_hours = [hours[0]]
+    sampled_hours += [h for h in hours[1:-1] if h % step_interval == 0]
+    if hours[-1] not in sampled_hours:
+        sampled_hours.append(hours[-1])
+
+    messages = [{"role": "system", "content": TRAJECTORY_SYSTEM_PROMPT}]
+
+    prev_risk = None
+    prev_row = None
+
+    for h in sampled_hours:
+        row = df[df["HOUR"] == h].iloc[0]
+        sofa_val = row.get("SOFA", 0)
+        risk = sofa_to_risk_label(sofa_val)
+
+        # User turn: new hour's observations
+        obs_text = format_hour_observations(row)
+        user_msg = f"Hour {int(h)} vitals/labs:\n{obs_text}\n\nUpdate your sepsis risk assessment."
+        messages.append({"role": "user", "content": user_msg})
+
+        # Assistant turn: expert assessment with explicit revision
+        assistant_msg = generate_expert_response(risk, prev_risk, h, row, prev_row, df)
+        messages.append({"role": "assistant", "content": assistant_msg})
+
+        prev_risk = risk
+        prev_row = row
+
+    return messages, sampled_hours
 
 
 def prepare_sft_dataset(config_path="config/paths.yaml"):
     """
-    Create SFT training dataset from processed MIMIC-III data.
+    Create trajectory-aware SFT training dataset from processed MIMIC-III data.
 
-    Format: JSONL with {messages: [{role, content}, ...]} per example.
-    Each example is a patient timeline up to hour H with the target
-    assessment at hour H.
+    Each example is a full multi-turn expert trace through one patient's
+    ICU stay, teaching the model to revise beliefs as evidence evolves.
     """
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -138,50 +257,51 @@ def prepare_sft_dataset(config_path="config/paths.yaml"):
     val_ids = set(all_patients[int(0.8 * n): int(0.9 * n)])
     test_ids = set(all_patients[int(0.9 * n):])
 
+    # Track which patients have sepsis for balanced reporting
+    sepsis_ids = set(sepsis["ICUSTAY_ID"].values)
+
     logger.info(f"Patients — train: {len(train_ids)}, val: {len(val_ids)}, test: {len(test_ids)}")
+    logger.info(f"Sepsis patients: {len(sepsis_ids)}")
 
     for split_name, split_ids in [("train", train_ids), ("val", val_ids), ("test", test_ids)]:
         examples = []
+        n_sepsis = 0
+        total_turns = 0
+
         for icustay_id in split_ids:
-            patient = hourly_sofa[hourly_sofa["ICUSTAY_ID"] == icustay_id].sort_values("HOUR")
-            hours = sorted(patient["HOUR"].unique())
+            patient = hourly_sofa[hourly_sofa["ICUSTAY_ID"] == icustay_id]
+            if len(patient) < 4:  # need enough hours for a meaningful trajectory
+                continue
 
-            # Generate training examples at multiple time points
-            # (every 4 hours + final hour to keep dataset manageable)
-            sample_hours = [h for h in hours if h % 4 == 0 or h == hours[-1]]
-            for target_hour in sample_hours:
-                sofa_val = patient[patient["HOUR"] == target_hour]["SOFA"].values
-                if len(sofa_val) == 0:
-                    continue
-                sofa_val = sofa_val[0]
-                risk = sofa_to_risk_label(sofa_val)
+            messages, sampled_hours = build_expert_trace(patient, step_interval=2)
+            has_sepsis = icustay_id in sepsis_ids
 
-                timeline = build_timeline_prompt(patient, up_to_hour=target_hour)
-                user_msg = f"Based on the patient data so far, assess the current sepsis risk.\n\n{timeline}\n\nProvide your assessment for the most recent hour."
-                target = generate_target_response(risk, target_hour, patient, sofa_val)
-
-                example = {
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_msg},
-                        {"role": "assistant", "content": target},
-                    ],
-                    "icustay_id": int(icustay_id),
-                    "hour": int(target_hour),
-                    "sofa": float(sofa_val),
-                    "risk": float(risk),
-                }
-                examples.append(example)
+            example = {
+                "messages": messages,
+                "icustay_id": int(icustay_id),
+                "has_sepsis": has_sepsis,
+                "n_turns": len(sampled_hours),
+                "hours_covered": [int(h) for h in sampled_hours],
+            }
+            examples.append(example)
+            total_turns += len(sampled_hours)
+            if has_sepsis:
+                n_sepsis += 1
 
         # Save
         outpath = out_dir / f"{split_name}.jsonl"
         with open(outpath, "w") as f:
             for ex in examples:
                 f.write(json.dumps(ex) + "\n")
-        logger.info(f"{split_name}: {len(examples)} examples -> {outpath}")
 
-    logger.info("SFT dataset preparation complete")
+        logger.info(
+            f"{split_name}: {len(examples)} traces ({n_sepsis} sepsis), "
+            f"{total_turns} total turns -> {outpath}"
+        )
+
+    logger.info("Trajectory-aware SFT dataset preparation complete")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     prepare_sft_dataset()

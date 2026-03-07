@@ -26,15 +26,11 @@ python -m src.sft.deploy_ollama
 
 FT_MODEL="llama3.1-sepsis:8b"
 
-# Run orderings on fine-tuned model
-echo "=== Fine-tuned: chronological ==="
-python -m src.inference.batch_runner --ordering chronological --model "$FT_MODEL" --suffix "_finetuned"
-
-echo "=== Fine-tuned: reverse ==="
-python -m src.inference.batch_runner --ordering reverse --model "$FT_MODEL" --suffix "_finetuned"
-
-echo "=== Fine-tuned: shuffled ==="
-python -m src.inference.batch_runner --ordering shuffled --model "$FT_MODEL" --suffix "_finetuned"
+# Run orderings on fine-tuned model (multi-turn — matches SFT training format)
+for ORDERING in chronological reverse shuffled; do
+  echo "=== Fine-tuned: ${ORDERING} (multiturn) ==="
+  python -m src.inference.batch_runner --ordering $ORDERING --mode multiturn --model "$FT_MODEL" --suffix "_finetuned"
+done
 
 # Run interventions
 echo "=== Interventions ==="

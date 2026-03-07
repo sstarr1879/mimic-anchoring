@@ -122,5 +122,42 @@ def build_incremental_prompts(patient_hours, ordering="chronological"):
     return prompts
 
 
+def build_multiturn_messages(patient_hours, ordering="chronological"):
+    """
+    Build a multi-turn conversation for trajectory-aware inference.
+
+    Instead of stuffing the full timeline into one prompt, each hour
+    becomes a separate user turn, and the model responds at each step.
+    This matches the trajectory-aware SFT training format.
+
+    Args:
+        patient_hours: DataFrame of one patient's hourly observations.
+        ordering: "chronological", "reverse", or "shuffled"
+
+    Returns:
+        List of (hour, messages_so_far) tuples.
+        Each messages_so_far is a list of {role, content} dicts
+        ready to send to the model, with prior assistant responses
+        to be filled in during inference.
+    """
+    df = patient_hours.sort_values("HOUR").copy()
+
+    if ordering == "reverse":
+        df = df.iloc[::-1].copy()
+    elif ordering == "shuffled":
+        df = df.sample(frac=1, random_state=42).copy()
+
+    turns = []
+    for _, row in df.iterrows():
+        obs_text = format_hour_observations(row)
+        user_msg = (
+            f"Hour {int(row['HOUR'])} vitals/labs:\n{obs_text}\n\n"
+            f"Update your sepsis risk assessment."
+        )
+        turns.append((int(row["HOUR"]), user_msg))
+
+    return turns
+
+
 # Need pandas for format_hour_observations
 import pandas as pd

@@ -55,6 +55,43 @@ class OllamaClient:
             "full_response": data,
         }
 
+    def chat_multiturn(self, messages: list[dict],
+                       temperature: float = 0.1, max_tokens: int = 256) -> dict:
+        """
+        Send a full multi-turn conversation to Ollama.
+
+        Args:
+            messages: List of {role, content} dicts (system + user/assistant history).
+
+        Returns dict with 'response', 'risk', 'reasoning', and raw 'full_response'.
+        """
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        try:
+            resp = requests.post(f"{self.host}/api/chat", json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("message", {}).get("content", "")
+        except requests.RequestException as e:
+            logger.error(f"Ollama request failed: {e}")
+            return {"response": "", "risk": None, "reasoning": "", "error": str(e)}
+
+        risk, reasoning = parse_risk_response(text)
+        return {
+            "response": text,
+            "risk": risk,
+            "reasoning": reasoning,
+            "full_response": data,
+        }
+
     def is_available(self) -> bool:
         """Check if Ollama server is running."""
         try:

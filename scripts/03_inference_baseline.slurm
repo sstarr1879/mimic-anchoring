@@ -25,15 +25,13 @@ sleep 10  # wait for server startup
 # Ensure model is available
 ollama pull llama3.1:8b
 
-# Run all three orderings
-echo "=== Running chronological ordering ==="
-python -m src.inference.batch_runner --ordering chronological
-
-echo "=== Running reverse ordering ==="
-python -m src.inference.batch_runner --ordering reverse
-
-echo "=== Running shuffled ordering ==="
-python -m src.inference.batch_runner --ordering shuffled
+# Run all three orderings in both modes (single-turn baseline + multi-turn)
+for MODE in single_turn multiturn; do
+  for ORDERING in chronological reverse shuffled; do
+    echo "=== Running ${ORDERING} (${MODE}) ==="
+    python -m src.inference.batch_runner --ordering $ORDERING --mode $MODE
+  done
+done
 
 # Cleanup
 kill $OLLAMA_PID
