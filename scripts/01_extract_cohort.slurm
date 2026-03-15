@@ -5,7 +5,7 @@
 #SBATCH --time=04:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
-#SBATCH --partition=general
+#SBATCH --partition=defq
 
 # Phase 1: Cohort extraction (CPU-only, needs RAM for large CSVs)
 

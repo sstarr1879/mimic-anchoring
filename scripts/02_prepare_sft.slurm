@@ -5,7 +5,7 @@
 #SBATCH --time=02:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=general
+#SBATCH --partition=defq
 
 # Phase 2: Prepare SFT dataset (CPU-only)
 
