@@ -25,7 +25,7 @@ pip install -r requirements.txt
 # ollama pull llama3.1:8b
 
 # Create data subdirectories
-mkdir -p /SEAS/home/g32999482/mimic-anchoring/data/{raw,processed,models,results}
+mkdir -p /SEAS/home/g32999482/emse-6575/mimic-anchoring/data/{raw,processed,models,results}
 echo ""
 echo "=== Setup complete ==="
 echo "NEXT STEPS:"

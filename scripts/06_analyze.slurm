@@ -11,7 +11,7 @@
 
 module load python3/3.11.6
 
-cd /SEAS/home/g32999482/mimic-anchoring
+cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source venv/bin/activate
 
 python -m src.bias.anchoring_metrics

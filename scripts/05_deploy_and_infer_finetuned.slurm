@@ -13,7 +13,7 @@
 module load python3/3.11.6
 module load cuda/12.1
 
-cd /SEAS/home/g32999482/mimic-anchoring
+cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source venv/bin/activate
 
 # Start Ollama
