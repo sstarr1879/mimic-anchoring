@@ -11,7 +11,7 @@
 # Phase 3: Baseline inference via Ollama (all 3 orderings)
 # Requires Ollama running on the same node with llama3.1:8b pulled
 
-module load python/3.11
+module load python3/3.11.6
 module load cuda/12.1  # adjust to your HPC
 
 cd /SEAS/home/g32999482/mimic-anchoring

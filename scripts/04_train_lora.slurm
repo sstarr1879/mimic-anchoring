@@ -11,7 +11,7 @@
 # Phase 3b: LoRA SFT training
 # Requires GPU with >= 24GB VRAM (A100, A6000, etc.)
 
-module load python/3.11
+module load python3/3.11.6
 module load cuda/12.1
 
 cd /SEAS/home/g32999482/mimic-anchoring

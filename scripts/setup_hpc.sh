@@ -9,8 +9,8 @@ echo "=== Setting up mimic-anchoring environment ==="
 mkdir -p logs
 
 # Create virtual environment
-module load python/3.11  # adjust to your HPC
-python -m venv venv
+module load python3/3.11.6
+python3 -m venv venv
 source venv/bin/activate
 
 # Install dependencies

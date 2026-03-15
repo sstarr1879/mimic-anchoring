@@ -9,7 +9,7 @@
 
 # Phase 5: Run anchoring bias analysis on all collected predictions
 
-module load python/3.11
+module load python3/3.11.6
 
 cd /SEAS/home/g32999482/mimic-anchoring
 source venv/bin/activate

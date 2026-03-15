@@ -9,7 +9,7 @@
 
 # Phase 1: Cohort extraction (CPU-only, needs RAM for large CSVs)
 
-module load python/3.11  # adjust to your HPC module name
+module load python3/3.11.6
 
 cd /SEAS/home/g32999482/mimic-anchoring
 source venv/bin/activate
