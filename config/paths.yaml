@@ -3,7 +3,7 @@
 # ============================================================
 
 # Raw MIMIC-III CSV directory (where the .csv.gz files live)
-mimic_raw_dir: "/SEAS/home/g32999482/emse-6575/mimic-anchoring/data/physionet.org/files/mimiciii/1.4/"
+mimic_raw_dir: "/SEAS/home/g32999482/mimic-anchoring/data/physionet.org/files/mimiciii/1.4/"
 
 # Processed data output directory
 processed_dir: "/SEAS/home/g32999482/emse-6575/mimic-anchoring/data/processed/"
