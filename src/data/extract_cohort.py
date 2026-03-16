@@ -127,15 +127,28 @@ def compute_sofa_components(mimic_dir, icustays):
 
     icustay_ids = set(icustays["ICUSTAY_ID"].dropna().astype(int))
 
-    # Load chartevents (large — filter by itemid)
-    logger.info("Loading CHARTEVENTS (this may take a while)...")
-    charts = load_table(
-        mimic_dir, "CHARTEVENTS",
+    # Load chartevents in chunks (too large to fit in memory at once)
+    logger.info("Loading CHARTEVENTS in chunks (this may take a while)...")
+    chart_path = Path(mimic_dir)
+    for ext in [f"CHARTEVENTS.csv.gz", f"CHARTEVENTS.csv"]:
+        fpath = chart_path / ext
+        if fpath.exists():
+            break
+    else:
+        raise FileNotFoundError("CHARTEVENTS not found in " + str(mimic_dir))
+    chart_chunks = []
+    for chunk in pd.read_csv(
+        fpath,
         usecols=["ICUSTAY_ID", "ITEMID", "CHARTTIME", "VALUENUM"],
         dtype={"ICUSTAY_ID": "float64", "ITEMID": "int64", "VALUENUM": "float64"},
-    )
-    charts = charts[charts["ITEMID"].isin(vital_items.keys())]
-    charts = charts[charts["ICUSTAY_ID"].isin(icustay_ids)]
+        low_memory=False,
+        chunksize=1_000_000,
+    ):
+        filtered = chunk[chunk["ITEMID"].isin(vital_items.keys())]
+        filtered = filtered[filtered["ICUSTAY_ID"].isin(icustay_ids)]
+        if len(filtered) > 0:
+            chart_chunks.append(filtered)
+    charts = pd.concat(chart_chunks, ignore_index=True)
     charts["CHARTTIME"] = pd.to_datetime(charts["CHARTTIME"], errors="coerce")
     charts["LABEL"] = charts["ITEMID"].map(vital_items)
     charts = charts.dropna(subset=["CHARTTIME", "VALUENUM", "ICUSTAY_ID"])
