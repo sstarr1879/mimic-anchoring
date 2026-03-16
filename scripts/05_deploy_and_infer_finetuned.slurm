@@ -11,7 +11,8 @@
 # Phase 4: Deploy fine-tuned model to Ollama and run anchoring experiments
 
 module load python3/3.11.6
-module load cuda/12.1
+module load cuda/12.2
+export PATH="$HOME/bin:$PATH"
 
 cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source venv/bin/activate

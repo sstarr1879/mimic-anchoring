@@ -12,7 +12,7 @@
 # Requires GPU with >= 24GB VRAM (A100, A6000, etc.)
 
 module load python3/3.11.6
-module load cuda/12.1
+module load cuda/12.2
 
 cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source venv/bin/activate

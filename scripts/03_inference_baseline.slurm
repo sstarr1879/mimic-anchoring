@@ -12,7 +12,8 @@
 # Requires Ollama running on the same node with llama3.1:8b pulled
 
 module load python3/3.11.6
-module load cuda/12.1  # adjust to your HPC
+module load cuda/12.2
+export PATH="$HOME/bin:$PATH"
 
 cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source venv/bin/activate
