@@ -48,6 +48,10 @@ Baseline (zero-shot) and fine-tuned models are each evaluated across two inferen
 | **Base zero-shot (single-turn)** | anchoring baseline | counterfactual | noise test |
 | **Base zero-shot (multi-turn)** | conversational baseline | counterfactual | noise test |
 | **SFT trajectory-aware (multi-turn)** | does SFT reduce anchoring? | revision under reversal | robustness |
+| **Context reset (every 6h)** | truncation vs anchoring | truncation vs anchoring | — |
+| **Re-prompting (every 6h)** | explicit reassessment | explicit reassessment | — |
+
+The **context reset** intervention truncates conversation history every N hours, preventing the model from anchoring on stale early impressions. **Re-prompting** keeps full history but explicitly instructs the model to reassess from scratch at regular intervals. Both are applied to the fine-tuned model in step 5 and compared against the unmodified SFT results to determine whether architectural interventions provide additional debiasing beyond training alone.
 
 ## Data
 
