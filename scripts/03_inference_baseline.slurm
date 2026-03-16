@@ -13,18 +13,20 @@
 
 module load python3/3.11.6
 module load cuda/12.2
-export PATH="$HOME/bin:$PATH"
+module load apptainer
 
 cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source venv/bin/activate
 
-# Start Ollama in background
-ollama serve &
+# Start Ollama server via apptainer in background
+export OLLAMA_MODELS=$HOME/ollama_models
+mkdir -p $OLLAMA_MODELS
+apptainer exec --nv ~/ollama.sif ollama serve &
 OLLAMA_PID=$!
-sleep 10  # wait for server startup
+sleep 15  # wait for server startup
 
 # Ensure model is available
-ollama pull llama3.1:8b
+apptainer exec --nv ~/ollama.sif ollama pull llama3.1:8b
 
 # Run all three orderings in both modes (single-turn baseline + multi-turn)
 for MODE in single_turn multiturn; do

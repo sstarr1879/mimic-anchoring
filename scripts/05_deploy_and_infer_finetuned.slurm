@@ -12,22 +12,24 @@
 
 module load python3/3.11.6
 module load cuda/12.2
-export PATH="$HOME/bin:$PATH"
+module load apptainer
 
 cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source venv/bin/activate
 
-# Start Ollama
-ollama serve &
+# Start Ollama via apptainer
+export OLLAMA_MODELS=$HOME/ollama_models
+mkdir -p $OLLAMA_MODELS
+apptainer exec --nv ~/ollama.sif ollama serve &
 OLLAMA_PID=$!
-sleep 10
+sleep 15
 
 # Deploy fine-tuned model
 python -m src.sft.deploy_ollama
 
 FT_MODEL="llama3.1-sepsis:8b"
 
-# Run orderings on fine-tuned model (multi-turn — matches SFT training format)
+# Run orderings on fine-tuned model (multi-turn -- matches SFT training format)
 for ORDERING in chronological reverse shuffled; do
   echo "=== Fine-tuned: ${ORDERING} (multiturn) ==="
   python -m src.inference.batch_runner --ordering $ORDERING --mode multiturn --model "$FT_MODEL" --suffix "_finetuned"
