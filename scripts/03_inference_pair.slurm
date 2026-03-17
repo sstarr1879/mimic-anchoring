@@ -2,15 +2,15 @@
 #SBATCH --job-name=mimic-infer
 #SBATCH --output=logs/03_infer_%j.out
 #SBATCH --error=logs/03_infer_%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu
 #SBATCH --exclusive
 
-# Run a single ordering+mode combo (one job per GPU node)
-# Usage: sbatch --export=ORDERING=chronological,MODE=single_turn scripts/03_inference_single.slurm
+# Run both modes for a single ordering (one job per GPU node)
+# Usage: sbatch --export=ORDERING=chronological scripts/03_inference_pair.slurm
 
 module load python3/3.11.6
 module load cuda/12.2
@@ -29,7 +29,10 @@ sleep 20
 # Ensure model is available
 apptainer exec --nv ~/ollama.sif ollama pull llama3.1:8b
 
-echo "=== Running ${ORDERING} (${MODE}) ==="
-python -m src.inference.batch_runner --ordering $ORDERING --mode $MODE
+echo "=== Running ${ORDERING} (single_turn) ==="
+python -m src.inference.batch_runner --ordering $ORDERING --mode single_turn
+
+echo "=== Running ${ORDERING} (multiturn) ==="
+python -m src.inference.batch_runner --ordering $ORDERING --mode multiturn
 
 kill $OLLAMA_PID
