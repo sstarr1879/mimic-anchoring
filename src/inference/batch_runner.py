@@ -110,8 +110,15 @@ def run_batch(config_path="config/paths.yaml", ordering="chronological",
     host = ollama_host or cfg["ollama"]["host"]
     client = OllamaClient(host=host, model=model)
 
-    if not client.is_available():
-        raise RuntimeError(f"Ollama not available at {cfg['ollama']['host']}")
+    # Wait for Ollama to be ready (may take a moment after serve starts)
+    import time
+    for attempt in range(10):
+        if client.is_available():
+            break
+        logger.info(f"Waiting for Ollama at {host} (attempt {attempt + 1}/10)...")
+        time.sleep(5)
+    else:
+        raise RuntimeError(f"Ollama not available at {host}")
 
     run_fn = run_patient_multiturn if mode == "multiturn" else run_patient_single_turn
 
