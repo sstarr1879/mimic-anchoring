@@ -141,7 +141,7 @@ def run_batch(config_path="config/paths.yaml", ordering="chronological",
     with open(outpath, "w") as f:
         for r in all_results:
             row = {k: v for k, v in r.items() if k != "full_response"}
-            f.write(json.dumps(row) + "\n")
+            f.write(json.dumps(row, default=lambda x: int(x) if hasattr(x, 'item') else str(x)) + "\n")
 
     logger.info(f"Saved {len(all_results)} predictions to {outpath}")
     return all_results
