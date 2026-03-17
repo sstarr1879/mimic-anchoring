@@ -75,7 +75,8 @@ def run_patient_multiturn(client, patient_hours, ordering="chronological",
 
 
 def run_batch(config_path="config/paths.yaml", ordering="chronological",
-              model_override=None, output_suffix="", mode="multiturn"):
+              model_override=None, output_suffix="", mode="multiturn",
+              ollama_host=None):
     """
     Run inference on the full sample cohort.
 
@@ -106,7 +107,8 @@ def run_batch(config_path="config/paths.yaml", ordering="chronological",
 
     # Init client
     model = model_override or cfg["ollama"]["model_base"]
-    client = OllamaClient(host=cfg["ollama"]["host"], model=model)
+    host = ollama_host or cfg["ollama"]["host"]
+    client = OllamaClient(host=host, model=model)
 
     if not client.is_available():
         raise RuntimeError(f"Ollama not available at {cfg['ollama']['host']}")
@@ -157,5 +159,8 @@ if __name__ == "__main__":
     parser.add_argument("--model", default=None)
     parser.add_argument("--config", default="config/paths.yaml")
     parser.add_argument("--suffix", default="")
+    parser.add_argument("--ollama-host", default=None,
+                        help="Override Ollama host URL (e.g., http://127.0.0.1:12345)")
     args = parser.parse_args()
-    run_batch(args.config, args.ordering, args.model, args.suffix, args.mode)
+    run_batch(args.config, args.ordering, args.model, args.suffix, args.mode,
+              ollama_host=args.ollama_host)
