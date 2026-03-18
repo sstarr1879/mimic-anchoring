@@ -10,10 +10,9 @@
 
 # Phase 3b: LoRA SFT training on GH200 (Grace Hopper) nodes
 
-module load python3/3.13.5
 module load cuda/12.8
 
 cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
-source venv-gh200/bin/activate
+source ~/miniforge/bin/activate lora
 
 python -m src.sft.train_lora
