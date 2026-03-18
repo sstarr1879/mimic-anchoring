@@ -1,0 +1,55 @@
+# ============================================================
+# EDIT THESE PATHS TO MATCH YOUR HPC ENVIRONMENT
+# ============================================================
+
+# Raw MIMIC-III CSV directory (where the .csv.gz files live)
+mimic_raw_dir: "/SEAS/home/g32999482/mimic-anchoring/data/physionet.org/files/mimiciii/1.4/"
+
+# Processed data output directory
+processed_dir: "/SEAS/home/g32999482/emse-6575/mimic-anchoring/data/processed/"
+
+# Model checkpoints and LoRA adapters
+model_dir: "/SEAS/home/g32999482/emse-6575/mimic-anchoring/data/models/"
+
+# Results output (predictions, metrics, plots)
+results_dir: "/SEAS/home/g32999482/emse-6575/mimic-anchoring/data/results/"
+
+# Ollama settings
+ollama:
+  host: "http://localhost:11434"
+  model_base: "llama3.1:8b"
+  model_finetuned: "llama3.1-sepsis:8b"  # after GGUF conversion
+
+# Cohort settings
+cohort:
+  # Sepsis-3: suspected infection + SOFA >= 2
+  sofa_threshold: 2
+  # Minimum ICU stay hours for inclusion
+  min_icu_hours: 12
+  # Time window for hourly bins (minutes)
+  bin_window_minutes: 60
+  # Max hours to include per stay
+  max_hours: 72
+
+# LoRA SFT settings
+sft:
+  base_model: "meta-llama/Llama-3.1-8B-Instruct"
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  max_seq_length: 4096
+
+# Anchoring experiment settings
+anchoring:
+  # Number of patients to sample for experiments (full cohort is expensive)
+  sample_size: 500
+  # Random seed
+  seed: 42
+  # Ordering variants for counterfactual test
+  orderings: ["chronological", "reverse", "shuffled"]
+  # Reset interval for intervention (hours)
+  reset_interval_hours: 6
