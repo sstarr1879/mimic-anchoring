@@ -3,6 +3,9 @@ import logging
 import sys
 from pathlib import Path
 
+# Ensure project root is on the Python path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 from src.bias.anchoring_metrics import compute_elasticity, compute_explanation_drift
