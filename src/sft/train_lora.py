@@ -47,7 +47,7 @@ def train(config_path="config/paths.yaml"):
         model_name=sft_cfg["base_model"],
         max_seq_length=sft_cfg["max_seq_length"],
         dtype=None,  # auto-detect
-        load_in_4bit=True,
+        load_in_4bit=sft_cfg.get("load_in_4bit", True),
     )
 
     model = FastLanguageModel.get_peft_model(
