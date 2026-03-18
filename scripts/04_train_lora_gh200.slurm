@@ -16,4 +16,7 @@ module load cuda/12.8
 cd /SEAS/home/g32999482/emse-6575/mimic-anchoring
 source ~/miniforge/bin/activate lora
 
+# Clear Unsloth compiled cache to pick up patches
+rm -rf unsloth_compiled_cache/
+
 python -m src.sft.train_lora

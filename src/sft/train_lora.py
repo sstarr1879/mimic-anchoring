@@ -50,6 +50,11 @@ def train(config_path="config/paths.yaml"):
     # Patch out fix_untrained_tokens — crashes on GH200/ARM meta tensors
     import unsloth.tokenizer_utils as _tok_utils
     _tok_utils.fix_untrained_tokens = lambda *args, **kwargs: None
+    try:
+        import unsloth_zoo.tokenizer_utils as _zoo_tok
+        _zoo_tok.fix_untrained_tokens = lambda *args, **kwargs: None
+    except ImportError:
+        pass
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=sft_cfg["base_model"],
