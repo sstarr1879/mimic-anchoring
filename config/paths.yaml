@@ -38,11 +38,11 @@ sft:
   lora_alpha: 32
   lora_dropout: 0.05
   epochs: 3
-  batch_size: 4
-  gradient_accumulation_steps: 4
+  batch_size: 1
+  gradient_accumulation_steps: 16
   learning_rate: 2.0e-4
   max_seq_length: 4096
-  load_in_4bit: true
+  load_in_4bit: false
 
 # Anchoring experiment settings
 anchoring:

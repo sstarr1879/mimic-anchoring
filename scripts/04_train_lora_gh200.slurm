@@ -7,6 +7,7 @@
 #SBATCH --gres=gpu:gh200:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem-per-gpu=32G
+#SBATCH --exclusive
 
 # Phase 3b: LoRA SFT training on GH200 (Grace Hopper) nodes
 
