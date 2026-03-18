@@ -8,7 +8,11 @@ Outputs LoRA adapter weights + GGUF for Ollama deployment.
 import json
 import logging
 import yaml
+import torch
 from pathlib import Path
+
+# Workaround for GH200/ARM: torch.nonzero meta registration
+torch.fx.experimental._config.meta_nonzero_assume_all_nonzero = True
 
 logger = logging.getLogger(__name__)
 

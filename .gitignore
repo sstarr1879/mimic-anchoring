@@ -1,4 +1,4 @@
 ollama_models/
 *.sif
 venv/
-data/
+/data/

@@ -233,8 +233,46 @@ def compute_explanation_drift(predictions_path, model_name="all-MiniLM-L6-v2"):
     return pd.DataFrame(results)
 
 
+def run_analysis_for_mode(results_dir, model_tag, mode_label, chrono_path, reverse_path, shuffled_path=None):
+    """Run all three analyses for a given inference mode (single-turn or multi-turn)."""
+    print(f"\n{'=' * 60}")
+    print(f"ANCHORING BIAS ANALYSIS — {mode_label}")
+    print(f"{'=' * 60}")
+
+    if not chrono_path.exists() or not reverse_path.exists():
+        print(f"  Skipping {mode_label}: missing prediction files")
+        return
+
+    # 1. Ordering effect
+    print(f"\n--- Counterfactual Ordering Effect ({mode_label}) ---")
+    ordering_df = compute_ordering_effect(
+        chrono_path, reverse_path,
+        shuffled_path if shuffled_path and shuffled_path.exists() else None,
+    )
+    ordering_df.to_csv(results_dir / f"ordering_effect_{mode_label}.csv", index=False)
+
+    # 2. Elasticity (both orderings)
+    for ordering, path in [("chronological", chrono_path), ("reverse", reverse_path)]:
+        print(f"\n--- Belief Update Elasticity ({mode_label}, {ordering}) ---")
+        elasticity_df = compute_elasticity(path)
+        elasticity_df.to_csv(
+            results_dir / f"elasticity_{ordering}_{mode_label}.csv", index=False
+        )
+
+    # 3. Explanation drift (both orderings)
+    for ordering, path in [("chronological", chrono_path), ("reverse", reverse_path)]:
+        print(f"\n--- Explanation Drift ({mode_label}, {ordering}) ---")
+        drift_df = compute_explanation_drift(path)
+        if len(drift_df) > 0:
+            drift_df.to_csv(
+                results_dir / f"explanation_drift_{ordering}_{mode_label}.csv", index=False
+            )
+
+    print(f"\n{mode_label} analysis complete.")
+
+
 def run_full_analysis(config_path="config/paths.yaml"):
-    """Run all anchoring bias metrics."""
+    """Run all anchoring bias metrics for single-turn and multi-turn modes."""
     import yaml
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
@@ -242,34 +280,23 @@ def run_full_analysis(config_path="config/paths.yaml"):
     results_dir = Path(cfg["results_dir"])
     model_tag = cfg["ollama"]["model_base"].replace(":", "_")
 
-    chrono_path = results_dir / f"predictions_chronological_{model_tag}.jsonl"
-    reverse_path = results_dir / f"predictions_reverse_{model_tag}.jsonl"
-    shuffled_path = results_dir / f"predictions_shuffled_{model_tag}.jsonl"
-
-    print("=" * 60)
-    print("ANCHORING BIAS ANALYSIS")
-    print("=" * 60)
-
-    # 1. Ordering effect
-    print("\n--- Counterfactual Ordering Effect ---")
-    ordering_df = compute_ordering_effect(
-        chrono_path, reverse_path,
-        shuffled_path if shuffled_path.exists() else None,
+    # Single-turn analysis
+    run_analysis_for_mode(
+        results_dir, model_tag, "single_turn",
+        chrono_path=results_dir / f"predictions_chronological_{model_tag}.jsonl",
+        reverse_path=results_dir / f"predictions_reverse_{model_tag}.jsonl",
+        shuffled_path=results_dir / f"predictions_shuffled_{model_tag}.jsonl",
     )
-    ordering_df.to_csv(results_dir / "ordering_effect.csv", index=False)
 
-    # 2. Elasticity
-    print("\n--- Belief Update Elasticity ---")
-    elasticity_df = compute_elasticity(chrono_path)
-    elasticity_df.to_csv(results_dir / "elasticity_chronological.csv", index=False)
+    # Multi-turn analysis
+    run_analysis_for_mode(
+        results_dir, model_tag, "multi_turn",
+        chrono_path=results_dir / f"predictions_chronological_multiturn_{model_tag}.jsonl",
+        reverse_path=results_dir / f"predictions_reverse_multiturn_{model_tag}.jsonl",
+        shuffled_path=results_dir / f"predictions_shuffled_multiturn_{model_tag}.jsonl",
+    )
 
-    # 3. Explanation drift
-    print("\n--- Explanation Drift ---")
-    drift_df = compute_explanation_drift(chrono_path)
-    if len(drift_df) > 0:
-        drift_df.to_csv(results_dir / "explanation_drift.csv", index=False)
-
-    print("\nAnalysis complete. Results saved to", results_dir)
+    print("\nAll analyses complete. Results saved to", results_dir)
 
 
 if __name__ == "__main__":
