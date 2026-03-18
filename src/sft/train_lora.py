@@ -47,6 +47,10 @@ def train(config_path="config/paths.yaml"):
     from transformers import TrainingArguments
     from datasets import Dataset
 
+    # Patch out fix_untrained_tokens — crashes on GH200/ARM meta tensors
+    import unsloth.tokenizer_utils as _tok_utils
+    _tok_utils.fix_untrained_tokens = lambda *args, **kwargs: None
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=sft_cfg["base_model"],
         max_seq_length=sft_cfg["max_seq_length"],
