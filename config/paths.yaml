@@ -42,7 +42,7 @@ sft:
   gradient_accumulation_steps: 4
   learning_rate: 2.0e-4
   max_seq_length: 4096
-  load_in_4bit: false
+  load_in_4bit: true
 
 # Anchoring experiment settings
 anchoring:

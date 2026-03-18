@@ -74,11 +74,6 @@ def train(config_path="config/paths.yaml"):
     train_dataset = Dataset.from_list(train_data).map(format_example)
     val_dataset = Dataset.from_list(val_data).map(format_example)
 
-    # Materialize model to avoid meta tensor issues on GH200/ARM
-    for param in model.parameters():
-        if param.device.type == "meta":
-            param.data = param.data.to("cuda")
-
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
