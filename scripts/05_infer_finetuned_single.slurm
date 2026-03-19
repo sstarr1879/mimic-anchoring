@@ -26,10 +26,11 @@ apptainer exec --nv ~/ollama.sif ollama serve &
 OLLAMA_PID=$!
 sleep 20
 
-# Deploy fine-tuned model
-python -m src.sft.deploy_ollama
-
+# Deploy fine-tuned model via apptainer
 FT_MODEL="llama3.1-sepsis:8b"
+MODELFILE="/SEAS/home/g32999482/emse-6575/mimic-anchoring/data/models/Modelfile"
+
+apptainer exec --nv ~/ollama.sif ollama create "$FT_MODEL" -f "$MODELFILE"
 
 echo "=== Fine-tuned: ${ORDERING} (multiturn) ==="
 python -m src.inference.batch_runner --ordering $ORDERING --mode multiturn --model "$FT_MODEL" --suffix "_finetuned"
