@@ -1,19 +1,19 @@
-# Measuring and Mitigating First Impression Bias in ICU Patient Monitoring
+# Measuring and Mitigating Trajectory Lock-In in LLM-Based ICU Patient Monitoring
 
 ![python](https://img.shields.io/badge/python-3.11+-green)
 ![status](https://img.shields.io/badge/status-experimental-orange)
 
-This project investigates **anchoring bias** (first impression bias) in large language models used for ICU sepsis prediction. When a patient appears stable at admission, both human clinicians and AI systems tend to lock onto "this patient is fine" — even as later vital signs suggest developing sepsis. We measure this effect in LLaMA 3.1 8B and test whether **trajectory-aware post-training** (LoRA SFT on expert revision traces) can teach the model to revise its beliefs correctly.
+This project investigates **trajectory lock-in** in large language models used for ICU sepsis prediction. Rather than classic anchoring bias (where the model fixates on its first impression), we find that LLMs latch onto the **perceived narrative direction** of patient data — a deterioration trajectory drives risk predictions upward regardless of absolute values, while an improvement trajectory suppresses them. The model over-extrapolates the trend it identifies early, failing to weigh the cumulative evidence. We measure this effect in LLaMA 3.1 8B and test whether **trajectory-aware post-training** (LoRA SFT on expert revision traces) can teach the model to revise its beliefs based on evidence rather than narrative momentum.
 
 ## Approach
 
 ### Three-Part Measurement Framework
 
-1. **Counterfactual Ordering** — Present the same patient's data in chronological, reverse, and shuffled order. If early information dominates the final prediction despite identical evidence, the model is anchored.
+1. **Counterfactual Ordering** — Present the same patient's data in chronological, reverse, and shuffled order. If the model's final prediction differs across orderings despite identical evidence, it is sensitive to narrative direction rather than cumulative clinical state. Our results show chronological order (stable → deteriorating) produces dramatically higher final risk scores than reverse order (deteriorating → stable) — the opposite of what classic anchoring would predict.
 
-2. **Belief Update Elasticity** — Feed vitals hour-by-hour in a multi-turn conversation and measure how much the model's risk estimate shifts when contradictory evidence arrives. Anchored models barely budge; flexible models adjust proportionally.
+2. **Belief Update Elasticity** — Feed vitals hour-by-hour in a multi-turn conversation and measure how much the model's risk estimate shifts when new evidence arrives. Locked-in models barely update once they've identified a trajectory; flexible models adjust proportionally to the evidence. We find 50-75% of hourly updates are zero-change, suggesting the model commits to a narrative early and coasts.
 
-3. **Explanation Drift** — Compare the semantic content of the model's reasoning at early vs. late timesteps. Genuine revision changes the narrative; anchored systems retrofit justifications to match prior conclusions.
+3. **Explanation Drift** — Compare the semantic content of the model's reasoning at early vs. late timesteps. A locked-in model maintains its narrative framing even as evidence changes; a flexible model genuinely revises its reasoning. Reverse-order explanations show higher similarity to the first explanation (0.73) than chronological (0.66), indicating the "improvement" narrative is stickier.
 
 ### Trajectory-Aware SFT
 
@@ -45,13 +45,13 @@ Baseline (zero-shot) and fine-tuned models are each evaluated across two inferen
 
 | | Chronological | Reverse | Shuffled |
 |---|---|---|---|
-| **Base zero-shot (single-turn)** | anchoring baseline | counterfactual | noise test |
-| **Base zero-shot (multi-turn)** | conversational baseline | counterfactual | noise test |
-| **SFT trajectory-aware (multi-turn)** | does SFT reduce anchoring? | revision under reversal | robustness |
-| **Context reset (every 6h)** | truncation vs anchoring | truncation vs anchoring | — |
+| **Base zero-shot (single-turn)** | trajectory baseline | counterfactual | no-narrative control |
+| **Base zero-shot (multi-turn)** | conversational baseline | counterfactual | no-narrative control |
+| **SFT trajectory-aware (multi-turn)** | does SFT reduce lock-in? | revision under reversal | robustness |
+| **Context reset (every 6h)** | truncation vs lock-in | truncation vs lock-in | — |
 | **Re-prompting (every 6h)** | explicit reassessment | explicit reassessment | — |
 
-The **context reset** intervention truncates conversation history every N hours, preventing the model from anchoring on stale early impressions. **Re-prompting** keeps full history but explicitly instructs the model to reassess from scratch at regular intervals. Both are applied to the fine-tuned model in step 5 and compared against the unmodified SFT results to determine whether architectural interventions provide additional debiasing beyond training alone.
+The **context reset** intervention truncates conversation history every N hours, preventing the model from extending a narrative beyond recent evidence. **Re-prompting** keeps full history but explicitly instructs the model to reassess from scratch at regular intervals. Both are applied to the fine-tuned model and compared against the unmodified SFT results to determine whether architectural interventions provide additional debiasing beyond training alone.
 
 ## Data
 
