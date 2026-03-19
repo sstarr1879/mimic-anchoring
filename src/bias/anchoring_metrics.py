@@ -283,9 +283,9 @@ def run_full_analysis(config_path="config/paths.yaml"):
     # Single-turn analysis
     run_analysis_for_mode(
         results_dir, model_tag, "single_turn",
-        chrono_path=results_dir / f"predictions_chronological_{model_tag}.jsonl",
-        reverse_path=results_dir / f"predictions_reverse_{model_tag}.jsonl",
-        shuffled_path=results_dir / f"predictions_shuffled_{model_tag}.jsonl",
+        chrono_path=results_dir / f"predictions_chronological_single_turn_{model_tag}.jsonl",
+        reverse_path=results_dir / f"predictions_reverse_single_turn_{model_tag}.jsonl",
+        shuffled_path=results_dir / f"predictions_shuffled_single_turn_{model_tag}.jsonl",
     )
 
     # Multi-turn analysis
