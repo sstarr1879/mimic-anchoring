@@ -63,12 +63,12 @@ def compute_ordering_effect(chrono_path, reverse_path, shuffled_path=None):
     # For patients who develop sepsis but start stable:
     # chrono should underpredict (anchored on early stability)
     # reverse should overpredict (anchored on early deterioration)
-    sepsis_patients = merged[merged["has_sepsis"]]
+    sepsis_patients = merged[merged["has_sepsis"]].dropna(subset=["risk_chrono", "risk_reverse"])
     if len(sepsis_patients) > 0:
         # Directional test: is chrono systematically lower?
         t_stat, p_val = stats.ttest_rel(
-            sepsis_patients["risk_chrono"].dropna(),
-            sepsis_patients["risk_reverse"].dropna()
+            sepsis_patients["risk_chrono"],
+            sepsis_patients["risk_reverse"],
         )
         logger.info(f"Paired t-test (sepsis patients): t={t_stat:.3f}, p={p_val:.4f}")
         logger.info(f"Mean chrono risk: {sepsis_patients['risk_chrono'].mean():.3f}")
