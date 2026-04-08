@@ -70,6 +70,20 @@ The **context reset** intervention truncates conversation history every N hours,
 | `DIAGNOSES_ICD` | Diagnosis codes |
 | `MICROBIOLOGYEVENTS` | Suspected infection (Sepsis-3 criteria) |
 | `PRESCRIPTIONS` | Antibiotic orders (Sepsis-3 criteria) |
+| `INPUTEVENTS_MV` | Vasopressor infusions (norepinephrine, vasopressin, epinephrine, dopamine, phenylephrine) — `TX_*_RATE` columns |
+| `OUTPUTEVENTS` | Urine output (for renal SOFA component) — `TX_URINE_ML` column |
+| `PROCEDUREEVENTS_MV` | Mechanical ventilation intervals — `TX_VENT_INVASIVE` / `TX_VENT_NONINVASIVE` flags |
+
+> **Metavision-only:** Treatment columns are extracted from the Metavision-era tables (`*_MV`) only. Carevue-era patients (~2001–2008) will have NaN/zero in `TX_*` columns and are effectively excluded from treatment-conditioned analyses. This is a deliberate trade-off — the MV schema is unified and the vasopressor ITEMIDs are well-documented, while the CV equivalent requires reconciling two different rate-encoding conventions.
+
+### Treatments vs. Interventions — naming distinction
+
+Two distinct concepts in this codebase use overlapping vocabulary; they are intentionally separated:
+
+- **Treatments** (clinical care delivered to the patient) live in `hourly_timelines.parquet` as columns prefixed `TX_*` and are surfaced to the model in prompts and expert traces. They feed the new `compute_treatment_responsive_elasticity` metric, which measures whether the model updates its risk estimate when a vasopressor is started, escalated, weaned, or stopped (and similarly for intubation/extubation). Anchored models show **asymmetric** elasticity — they update on worsening evidence but suppress updates on improving evidence — which is the signature de-anchoring failure.
+- **Interventions** (algorithmic debiasing strategies) live under `src/interventions/` and refer to context resets and re-prompting applied at inference time to break trajectory lock-in. The `intervention` field in saved prediction JSONL files refers to *this* meaning.
+
+In short: **treatments** are something the patient receives; **interventions** are something we do to the model.
 
 ## Project Structure
 

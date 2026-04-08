@@ -142,6 +142,139 @@ def compute_elasticity(predictions_path):
     return df
 
 
+def compute_treatment_responsive_elasticity(predictions_path, hourly_path):
+    """
+    Treatment-conditioned belief update elasticity.
+
+    The standard `compute_elasticity` measures |delta_risk| at every hour
+    indiscriminately. This function joins predictions to the hourly
+    timelines (which carry TX_* treatment columns) and stratifies the
+    elasticity by what kind of evidence the model just received:
+
+      - post_treatment_event: hours immediately following a vasopressor
+        start/stop/escalation/wean or intubation/extubation.
+      - baseline (vitals_only): hours with no treatment transition.
+      - asymmetric: |delta_risk| on hours where evidence is *worsening*
+        (treatment escalation, intubation) vs *improving* (treatment
+        wean, extubation).
+
+    Anchored models show:
+      - Suppressed elasticity post-treatment events overall.
+      - Asymmetric elasticity: they update on worsening evidence
+        ("aha, more sepsis") but not on improving evidence
+        ("the patient is responding") — the anchoring signature.
+
+    Args:
+        predictions_path: JSONL of model risk traces (icustay_id, hour, risk).
+        hourly_path: parquet from extract_cohort.py with TX_* columns.
+
+    Returns:
+        dict of summary metrics.
+    """
+    preds = load_predictions(predictions_path)
+    if "risk" not in preds.columns or len(preds) == 0:
+        logger.warning(f"No usable predictions in {predictions_path}")
+        return {}
+
+    hourly = pd.read_parquet(hourly_path)
+    tx_cols = [c for c in hourly.columns if c.startswith("TX_")]
+    if not tx_cols:
+        logger.warning(f"No TX_* columns in {hourly_path} — "
+                       "treatment-conditioned elasticity requires the v2 cohort.")
+        return {}
+
+    # Normalize join keys
+    hourly = hourly.rename(columns={"ICUSTAY_ID": "icustay_id", "HOUR": "hour"})
+    hourly["icustay_id"] = hourly["icustay_id"].astype(int)
+    hourly["hour"] = hourly["hour"].astype(int)
+    preds["icustay_id"] = preds["icustay_id"].astype(int)
+    preds["hour"] = preds["hour"].astype(int)
+
+    merged = preds.merge(
+        hourly[["icustay_id", "hour"] + tx_cols],
+        on=["icustay_id", "hour"],
+        how="left",
+    )
+    merged = merged.sort_values(["icustay_id", "hour"]).reset_index(drop=True)
+    merged = merged.dropna(subset=["risk"])
+
+    rows = []
+    for icustay_id, group in merged.groupby("icustay_id"):
+        group = group.sort_values("hour").reset_index(drop=True)
+        for i in range(1, len(group)):
+            prev = group.loc[i - 1]
+            curr = group.loc[i]
+            delta = curr["risk"] - prev["risk"]
+            abs_delta = abs(delta)
+
+            # Detect treatment transitions between t-1 and t
+            event_type = None  # "worsening", "improving", or None
+            prev_norepi = prev.get("TX_NOREPI_RATE", 0) or 0
+            curr_norepi = curr.get("TX_NOREPI_RATE", 0) or 0
+            prev_vent = prev.get("TX_VENT_INVASIVE", 0) or 0
+            curr_vent = curr.get("TX_VENT_INVASIVE", 0) or 0
+
+            if prev_norepi == 0 and curr_norepi > 0:
+                event_type = "worsening"  # pressor started
+            elif prev_norepi > 0 and curr_norepi == 0:
+                event_type = "improving"  # pressor weaned off
+            elif curr_norepi > prev_norepi * 1.5 and prev_norepi > 0:
+                event_type = "worsening"  # escalation
+            elif curr_norepi > 0 and curr_norepi < prev_norepi * 0.5:
+                event_type = "improving"  # weaning
+            elif not prev_vent and curr_vent:
+                event_type = "worsening"  # intubation
+            elif prev_vent and not curr_vent:
+                event_type = "improving"  # extubation
+
+            rows.append({
+                "icustay_id": int(icustay_id),
+                "hour": int(curr["hour"]),
+                "abs_delta_risk": abs_delta,
+                "delta_risk": delta,
+                "event_type": event_type,
+            })
+
+    df = pd.DataFrame(rows)
+    if len(df) == 0:
+        return {}
+
+    baseline = df[df["event_type"].isnull()]
+    post_event = df[df["event_type"].notnull()]
+    worsening = df[df["event_type"] == "worsening"]
+    improving = df[df["event_type"] == "improving"]
+
+    summary = {
+        "n_baseline_hours": int(len(baseline)),
+        "n_treatment_event_hours": int(len(post_event)),
+        "n_worsening_events": int(len(worsening)),
+        "n_improving_events": int(len(improving)),
+        "mean_elasticity_baseline": float(baseline["abs_delta_risk"].mean()) if len(baseline) else None,
+        "mean_elasticity_post_treatment": float(post_event["abs_delta_risk"].mean()) if len(post_event) else None,
+        "mean_elasticity_worsening": float(worsening["abs_delta_risk"].mean()) if len(worsening) else None,
+        "mean_elasticity_improving": float(improving["abs_delta_risk"].mean()) if len(improving) else None,
+    }
+    # Asymmetry ratio: anchored models show this >> 1
+    if summary["mean_elasticity_improving"] and summary["mean_elasticity_improving"] > 0:
+        summary["asymmetry_ratio"] = (
+            summary["mean_elasticity_worsening"] / summary["mean_elasticity_improving"]
+        )
+    else:
+        summary["asymmetry_ratio"] = None
+
+    # Signed responsiveness on improving events: a non-anchored model
+    # should produce *negative* delta_risk on improving events. An anchored
+    # model produces small or even positive deltas (still going up despite
+    # the patient responding).
+    if len(improving) > 0:
+        summary["mean_signed_delta_on_improving"] = float(improving["delta_risk"].mean())
+    else:
+        summary["mean_signed_delta_on_improving"] = None
+
+    logger.info(f"Treatment-responsive elasticity: {summary}")
+    return summary
+
+
 def compute_bayesian_ideal(hourly_path, sepsis_path):
     """
     Compute a Bayesian ideal updater's risk trajectory for comparison.

@@ -121,6 +121,44 @@ def generate_expert_response(risk, prev_risk, hour, current_row, prev_row, patie
         cr = current_row["CREATININE"]
         if cr > 2:
             observations.append(f"renal dysfunction (Cr {cr:.1f})")
+    # Treatment observations
+    norepi_now = current_row.get("TX_NOREPI_RATE", 0) or 0
+    if pd.notna(norepi_now) and norepi_now > 0:
+        observations.append(f"on norepinephrine ({norepi_now:.2f} mcg/kg/min)")
+    n_pressors = current_row.get("TX_VASO_N_AGENTS", 0) or 0
+    if pd.notna(n_pressors) and n_pressors >= 2:
+        observations.append(f"on {int(n_pressors)} vasopressors")
+    if current_row.get("TX_VENT_INVASIVE"):
+        observations.append("mechanically ventilated")
+    uo = current_row.get("TX_URINE_ML")
+    if pd.notna(uo) and uo < 20 and uo >= 0:
+        observations.append(f"oliguric (UO {uo:.0f} mL/h)")
+
+    # Detect treatment transitions vs prior hour — these are the key
+    # de-anchoring training signals.
+    tx_events = []
+    if prev_row is not None:
+        prev_norepi = prev_row.get("TX_NOREPI_RATE", 0) or 0
+        if pd.isna(prev_norepi):
+            prev_norepi = 0
+        if pd.isna(norepi_now):
+            norepi_now = 0
+        if prev_norepi == 0 and norepi_now > 0:
+            tx_events.append(f"norepinephrine started at {norepi_now:.2f} mcg/kg/min")
+        elif prev_norepi > 0 and norepi_now == 0:
+            tx_events.append("norepinephrine weaned off")
+        elif norepi_now > prev_norepi * 1.5 and prev_norepi > 0:
+            tx_events.append(
+                f"norepinephrine escalated ({prev_norepi:.2f} -> {norepi_now:.2f})"
+            )
+        elif norepi_now > 0 and norepi_now < prev_norepi * 0.5:
+            tx_events.append(
+                f"norepinephrine weaning ({prev_norepi:.2f} -> {norepi_now:.2f})"
+            )
+        if not prev_row.get("TX_VENT_INVASIVE") and current_row.get("TX_VENT_INVASIVE"):
+            tx_events.append("intubated")
+        elif prev_row.get("TX_VENT_INVASIVE") and not current_row.get("TX_VENT_INVASIVE"):
+            tx_events.append("extubated")
 
     # Construct reasoning that explicitly addresses belief revision
     reasoning_parts = []
@@ -148,6 +186,10 @@ def generate_expert_response(risk, prev_risk, hour, current_row, prev_row, patie
             reasoning_parts.append(
                 f"Revising upward from {prev_str} to {risk:.2f}."
             )
+            if tx_events:
+                reasoning_parts.append(
+                    f"Treatment escalation reflects clinical concern: {'; '.join(tx_events)}."
+                )
             if trend_notes:
                 reasoning_parts.append(f"Key changes: {'; '.join(trend_notes[:3])}.")
             if observations:
@@ -162,9 +204,26 @@ def generate_expert_response(risk, prev_risk, hour, current_row, prev_row, patie
             reasoning_parts.append(
                 f"Revising downward from {prev_str} to {risk:.2f}."
             )
+            if tx_events:
+                # The critical de-anchoring signal: improvement under active
+                # treatment is *response to therapy*, not "I was wrong about sepsis."
+                reasoning_parts.append(
+                    f"Patient responding to treatment: {'; '.join(tx_events)}. "
+                    "Improvement reflects effective intervention, not spontaneous recovery — "
+                    "the underlying sepsis risk remains, but the trajectory is favorable."
+                )
+            elif (current_row.get("TX_VASO_ANY") or 0) > 0 or current_row.get("TX_VENT_INVASIVE"):
+                # Still on active treatment — improvement is treatment-mediated
+                reasoning_parts.append(
+                    "Improvement occurring under ongoing treatment (vasopressors/ventilation "
+                    "still active). Risk reduction reflects therapeutic response, not resolution."
+                )
             if trend_notes:
                 reasoning_parts.append(f"Improving trends: {'; '.join(trend_notes[:3])}.")
-            reasoning_parts.append("Clinical trajectory suggests improvement.")
+            if not tx_events and not (
+                (current_row.get("TX_VASO_ANY") or 0) > 0 or current_row.get("TX_VENT_INVASIVE")
+            ):
+                reasoning_parts.append("Clinical trajectory suggests improvement.")
 
     reasoning = " ".join(reasoning_parts)
 

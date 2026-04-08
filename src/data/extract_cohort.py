@@ -18,6 +18,40 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# Clinical treatment ITEMIDs (Metavision only)
+# ============================================================
+# These are distinct from the algorithmic "interventions" in
+# src/interventions/ — these are *treatments delivered to the
+# patient* (vasopressors, urine output, mechanical ventilation),
+# extracted into TX_* columns on hourly_timelines.parquet.
+
+VASOPRESSOR_ITEMS = {
+    221906: "NOREPI",       # Norepinephrine
+    221986: "VASOPRESSIN",  # Vasopressin
+    221289: "EPI",          # Epinephrine
+    221662: "DOPAMINE",     # Dopamine
+    221749: "PHENYLEPH",    # Phenylephrine
+}
+
+URINE_OUTPUT_ITEMS = {
+    226559: "FOLEY",
+    226560: "VOID",
+    226561: "CONDOM",
+    226584: "ILEOCONDUIT",
+    226563: "SUPRAPUBIC",
+    226564: "RT_NEPHRO",
+    226565: "LT_NEPHRO",
+    227488: "GU_IRRIGANT_OUT",
+    227489: "GU_IRRIGANT_IN",  # subtracted from total
+}
+
+VENT_ITEMS = {
+    225792: "INVASIVE_VENT",     # Invasive ventilation (PROCEDUREEVENTS_MV)
+    225794: "NONINVASIVE_VENT",  # Non-invasive ventilation
+}
+
+
 def load_config(config_path="config/paths.yaml"):
     with open(config_path) as f:
         return yaml.safe_load(f)
@@ -185,10 +219,15 @@ def compute_sofa_components(mimic_dir, icustays):
     return all_obs
 
 
-def build_hourly_timelines(observations, icustays, max_hours=72, bin_minutes=60):
+def build_hourly_timelines(observations, icustays, max_hours=72, bin_minutes=60,
+                           treatments=None):
     """
     Bin observations into hourly windows relative to ICU admission.
     Returns pivoted DataFrame: ICUSTAY_ID x HOUR x features.
+
+    If `treatments` is provided (output of aggregate_treatments_hourly), its
+    TX_* columns are left-joined onto the result. Missing TX values are
+    filled with 0 (absence = treatment not active).
     """
     icu = icustays[["ICUSTAY_ID", "INTIME"]].copy()
     icu["INTIME"] = pd.to_datetime(icu["INTIME"])
@@ -211,21 +250,323 @@ def build_hourly_timelines(observations, icustays, max_hours=72, bin_minutes=60)
     )
     hourly.columns.name = None
 
+    if treatments is not None and len(treatments) > 0:
+        tx_cols = [c for c in treatments.columns if c.startswith("TX_")]
+        hourly = hourly.merge(
+            treatments[["ICUSTAY_ID", "HOUR"] + tx_cols],
+            on=["ICUSTAY_ID", "HOUR"],
+            how="left",
+        )
+        for c in tx_cols:
+            hourly[c] = hourly[c].fillna(0)
+
     logger.info(f"Built hourly timelines: {hourly['ICUSTAY_ID'].nunique()} stays, "
                 f"{len(hourly)} total rows")
     return hourly
 
 
+def _normalize_pressor_rate(rate, rateuom, weight_kg, drug):
+    """
+    Convert a vasopressor infusion rate to mcg/kg/min.
+
+    MIMIC-III INPUTEVENTS_MV stores rates in a variety of units depending
+    on the drug. The most common units we need to handle:
+      - mcg/kg/min  → identity
+      - mcg/min     → divide by weight_kg
+      - mg/kg/min   → multiply by 1000
+      - mg/min      → multiply by 1000, divide by weight_kg
+      - units/min, units/hour → vasopressin only; convert to "rate equivalent"
+        by leaving in original units (we report vasopressin presence, not
+        a normalized rate, since the SOFA ladder uses dose-based cutoffs
+        only for catecholamines).
+
+    For vasopressin we return the raw rate (units/hr or units/min) and
+    a separate boolean is used downstream. For all other pressors we
+    return mcg/kg/min.
+    """
+    if pd.isna(rate) or rate is None:
+        return np.nan
+    if rateuom is None or pd.isna(rateuom):
+        return np.nan
+    uom = str(rateuom).lower().strip()
+    weight = weight_kg if (weight_kg and weight_kg > 0) else 80.0  # fallback adult weight
+
+    if drug == "VASOPRESSIN":
+        # Don't normalize — vasopressin is dosed in units, presence is what matters
+        return float(rate)
+
+    if "mcg/kg/min" in uom:
+        return float(rate)
+    if "mcg/min" in uom:
+        return float(rate) / weight
+    if "mg/kg/min" in uom:
+        return float(rate) * 1000.0
+    if "mg/min" in uom:
+        return float(rate) * 1000.0 / weight
+    if "mg/kg/hour" in uom or "mg/kg/hr" in uom:
+        return float(rate) * 1000.0 / 60.0
+    if "mcg/kg/hour" in uom or "mcg/kg/hr" in uom:
+        return float(rate) / 60.0
+    return np.nan
+
+
+def load_vasopressors(mimic_dir, icustay_ids):
+    """
+    Load vasopressor infusions from INPUTEVENTS_MV (Metavision only).
+
+    Returns long-form DataFrame with one row per infusion segment:
+      ICUSTAY_ID, STARTTIME, ENDTIME, DRUG, RATE_NORMALIZED
+    where RATE_NORMALIZED is mcg/kg/min for catecholamines and raw
+    units for vasopressin.
+    """
+    path = Path(mimic_dir)
+    for ext in ["INPUTEVENTS_MV.csv.gz", "INPUTEVENTS_MV.csv"]:
+        fpath = path / ext
+        if fpath.exists():
+            break
+    else:
+        logger.warning("INPUTEVENTS_MV not found — skipping vasopressors")
+        return pd.DataFrame(columns=["ICUSTAY_ID", "STARTTIME", "ENDTIME", "DRUG", "RATE_NORMALIZED"])
+
+    logger.info(f"Loading vasopressors from {fpath}")
+    chunks = []
+    for chunk in pd.read_csv(
+        fpath,
+        usecols=["ICUSTAY_ID", "ITEMID", "STARTTIME", "ENDTIME", "RATE", "RATEUOM", "PATIENTWEIGHT"],
+        dtype={"ICUSTAY_ID": "float64", "ITEMID": "int64",
+               "RATE": "float64", "PATIENTWEIGHT": "float64"},
+        low_memory=False,
+        chunksize=500_000,
+    ):
+        chunk = chunk[chunk["ITEMID"].isin(VASOPRESSOR_ITEMS.keys())]
+        chunk = chunk[chunk["ICUSTAY_ID"].isin(icustay_ids)]
+        if len(chunk) > 0:
+            chunks.append(chunk)
+    if not chunks:
+        return pd.DataFrame(columns=["ICUSTAY_ID", "STARTTIME", "ENDTIME", "DRUG", "RATE_NORMALIZED"])
+
+    vaso = pd.concat(chunks, ignore_index=True)
+    vaso["DRUG"] = vaso["ITEMID"].map(VASOPRESSOR_ITEMS)
+    vaso["STARTTIME"] = pd.to_datetime(vaso["STARTTIME"], errors="coerce")
+    vaso["ENDTIME"] = pd.to_datetime(vaso["ENDTIME"], errors="coerce")
+    vaso = vaso.dropna(subset=["STARTTIME", "ENDTIME", "ICUSTAY_ID"])
+    vaso["ICUSTAY_ID"] = vaso["ICUSTAY_ID"].astype(int)
+
+    vaso["RATE_NORMALIZED"] = vaso.apply(
+        lambda r: _normalize_pressor_rate(r["RATE"], r["RATEUOM"], r["PATIENTWEIGHT"], r["DRUG"]),
+        axis=1,
+    )
+    logger.info(f"Loaded {len(vaso)} vasopressor infusion segments across "
+                f"{vaso['ICUSTAY_ID'].nunique()} stays")
+    return vaso[["ICUSTAY_ID", "STARTTIME", "ENDTIME", "DRUG", "RATE_NORMALIZED"]]
+
+
+def load_urine_output(mimic_dir, icustay_ids):
+    """
+    Load urine output events from OUTPUTEVENTS.
+
+    Returns DataFrame with ICUSTAY_ID, CHARTTIME, VOLUME_ML where
+    VOLUME_ML is signed (positive for output, negative for irrigant in
+    so the per-bin sum gives true urine output).
+    """
+    path = Path(mimic_dir)
+    for ext in ["OUTPUTEVENTS.csv.gz", "OUTPUTEVENTS.csv"]:
+        fpath = path / ext
+        if fpath.exists():
+            break
+    else:
+        logger.warning("OUTPUTEVENTS not found — skipping urine output")
+        return pd.DataFrame(columns=["ICUSTAY_ID", "CHARTTIME", "VOLUME_ML"])
+
+    logger.info(f"Loading urine output from {fpath}")
+    chunks = []
+    for chunk in pd.read_csv(
+        fpath,
+        usecols=["ICUSTAY_ID", "ITEMID", "CHARTTIME", "VALUE"],
+        dtype={"ICUSTAY_ID": "float64", "ITEMID": "int64", "VALUE": "float64"},
+        low_memory=False,
+        chunksize=500_000,
+    ):
+        chunk = chunk[chunk["ITEMID"].isin(URINE_OUTPUT_ITEMS.keys())]
+        chunk = chunk[chunk["ICUSTAY_ID"].isin(icustay_ids)]
+        if len(chunk) > 0:
+            chunks.append(chunk)
+    if not chunks:
+        return pd.DataFrame(columns=["ICUSTAY_ID", "CHARTTIME", "VOLUME_ML"])
+
+    urine = pd.concat(chunks, ignore_index=True)
+    urine["CHARTTIME"] = pd.to_datetime(urine["CHARTTIME"], errors="coerce")
+    urine = urine.dropna(subset=["CHARTTIME", "VALUE", "ICUSTAY_ID"])
+    urine["ICUSTAY_ID"] = urine["ICUSTAY_ID"].astype(int)
+    # GU irrigant IN is subtracted from output to give true urine output
+    urine["LABEL"] = urine["ITEMID"].map(URINE_OUTPUT_ITEMS)
+    urine["VOLUME_ML"] = np.where(
+        urine["LABEL"] == "GU_IRRIGANT_IN", -urine["VALUE"], urine["VALUE"]
+    )
+    logger.info(f"Loaded {len(urine)} urine output events across "
+                f"{urine['ICUSTAY_ID'].nunique()} stays")
+    return urine[["ICUSTAY_ID", "CHARTTIME", "VOLUME_ML"]]
+
+
+def load_ventilation(mimic_dir, icustay_ids):
+    """
+    Load mechanical ventilation procedure intervals from PROCEDUREEVENTS_MV.
+
+    Returns DataFrame with ICUSTAY_ID, STARTTIME, ENDTIME, VENT_TYPE
+    where VENT_TYPE is 'INVASIVE' or 'NONINVASIVE'.
+    """
+    path = Path(mimic_dir)
+    for ext in ["PROCEDUREEVENTS_MV.csv.gz", "PROCEDUREEVENTS_MV.csv"]:
+        fpath = path / ext
+        if fpath.exists():
+            break
+    else:
+        logger.warning("PROCEDUREEVENTS_MV not found — skipping ventilation")
+        return pd.DataFrame(columns=["ICUSTAY_ID", "STARTTIME", "ENDTIME", "VENT_TYPE"])
+
+    logger.info(f"Loading ventilation from {fpath}")
+    proc = pd.read_csv(
+        fpath,
+        usecols=["ICUSTAY_ID", "ITEMID", "STARTTIME", "ENDTIME"],
+        dtype={"ICUSTAY_ID": "float64", "ITEMID": "int64"},
+        low_memory=False,
+    )
+    proc = proc[proc["ITEMID"].isin(VENT_ITEMS.keys())]
+    proc = proc[proc["ICUSTAY_ID"].isin(icustay_ids)]
+    if len(proc) == 0:
+        return pd.DataFrame(columns=["ICUSTAY_ID", "STARTTIME", "ENDTIME", "VENT_TYPE"])
+
+    proc["STARTTIME"] = pd.to_datetime(proc["STARTTIME"], errors="coerce")
+    proc["ENDTIME"] = pd.to_datetime(proc["ENDTIME"], errors="coerce")
+    proc = proc.dropna(subset=["STARTTIME", "ENDTIME", "ICUSTAY_ID"])
+    proc["ICUSTAY_ID"] = proc["ICUSTAY_ID"].astype(int)
+    proc["VENT_TYPE"] = proc["ITEMID"].map(VENT_ITEMS).str.replace("_VENT", "", regex=False)
+    logger.info(f"Loaded {len(proc)} ventilation intervals across "
+                f"{proc['ICUSTAY_ID'].nunique()} stays")
+    return proc[["ICUSTAY_ID", "STARTTIME", "ENDTIME", "VENT_TYPE"]]
+
+
+def aggregate_treatments_hourly(vaso, urine, vent, icustays, max_hours=72):
+    """
+    Aggregate vasopressors, urine output, and ventilation onto the same
+    hourly grid as build_hourly_timelines.
+
+    Returns DataFrame with ICUSTAY_ID, HOUR, and TX_* columns.
+    """
+    icu = icustays[["ICUSTAY_ID", "INTIME"]].copy()
+    icu["INTIME"] = pd.to_datetime(icu["INTIME"])
+    icu["ICUSTAY_ID"] = icu["ICUSTAY_ID"].astype(int)
+
+    # Build the (ICUSTAY_ID, HOUR) skeleton matching build_hourly_timelines bins
+    hours_idx = []
+    for stay_id, intime in zip(icu["ICUSTAY_ID"].values, icu["INTIME"].values):
+        for h in range(max_hours):
+            hours_idx.append((stay_id, h))
+    skel = pd.DataFrame(hours_idx, columns=["ICUSTAY_ID", "HOUR"])
+    skel = skel.merge(icu, on="ICUSTAY_ID")
+    skel["BIN_START"] = skel["INTIME"] + pd.to_timedelta(skel["HOUR"], unit="h")
+    skel["BIN_END"] = skel["BIN_START"] + pd.Timedelta(hours=1)
+
+    # ---- Vasopressors: per-hour rate by drug ----
+    drug_cols = {}
+    for drug in ["NOREPI", "EPI", "DOPAMINE", "PHENYLEPH", "VASOPRESSIN"]:
+        drug_cols[f"TX_{drug}_RATE"] = np.zeros(len(skel))
+
+    if len(vaso) > 0:
+        vaso = vaso.merge(icu, on="ICUSTAY_ID")
+        # For each infusion, find which (stay, hour) bins it overlaps
+        for _, row in vaso.iterrows():
+            stay_id = row["ICUSTAY_ID"]
+            start_h = max(0, int((row["STARTTIME"] - row["INTIME"]).total_seconds() // 3600))
+            end_h = min(max_hours, int((row["ENDTIME"] - row["INTIME"]).total_seconds() // 3600) + 1)
+            if end_h <= 0 or start_h >= max_hours:
+                continue
+            mask = (skel["ICUSTAY_ID"] == stay_id) & \
+                   (skel["HOUR"] >= start_h) & (skel["HOUR"] < end_h)
+            col = f"TX_{row['DRUG']}_RATE"
+            if col in drug_cols and pd.notna(row["RATE_NORMALIZED"]):
+                # If multiple infusions overlap, take the max rate
+                idx = skel.index[mask]
+                drug_cols[col][idx] = np.maximum(drug_cols[col][idx], row["RATE_NORMALIZED"])
+
+    for col, vals in drug_cols.items():
+        skel[col] = vals
+
+    # Derived: any pressor active, count of distinct agents
+    pressor_cols = [c for c in drug_cols.keys()]
+    skel["TX_VASO_ANY"] = (skel[pressor_cols] > 0).any(axis=1).astype(int)
+    skel["TX_VASO_N_AGENTS"] = (skel[pressor_cols] > 0).sum(axis=1).astype(int)
+
+    # ---- Urine output: sum mL per hour ----
+    if len(urine) > 0:
+        urine = urine.merge(icu, on="ICUSTAY_ID")
+        urine["HOUR"] = ((urine["CHARTTIME"] - urine["INTIME"]).dt.total_seconds() // 3600).astype("Int64")
+        urine = urine[(urine["HOUR"] >= 0) & (urine["HOUR"] < max_hours)]
+        urine_hourly = (
+            urine.groupby(["ICUSTAY_ID", "HOUR"])["VOLUME_ML"]
+            .sum()
+            .reset_index()
+            .rename(columns={"VOLUME_ML": "TX_URINE_ML"})
+        )
+        urine_hourly["HOUR"] = urine_hourly["HOUR"].astype(int)
+        skel = skel.merge(urine_hourly, on=["ICUSTAY_ID", "HOUR"], how="left")
+    else:
+        skel["TX_URINE_ML"] = np.nan
+    skel["TX_URINE_ML"] = skel["TX_URINE_ML"].fillna(0)
+
+    # ---- Ventilation: boolean flags per hour ----
+    skel["TX_VENT_INVASIVE"] = 0
+    skel["TX_VENT_NONINVASIVE"] = 0
+    if len(vent) > 0:
+        vent = vent.merge(icu, on="ICUSTAY_ID")
+        for _, row in vent.iterrows():
+            stay_id = row["ICUSTAY_ID"]
+            start_h = max(0, int((row["STARTTIME"] - row["INTIME"]).total_seconds() // 3600))
+            end_h = min(max_hours, int((row["ENDTIME"] - row["INTIME"]).total_seconds() // 3600) + 1)
+            if end_h <= 0 or start_h >= max_hours:
+                continue
+            mask = (skel["ICUSTAY_ID"] == stay_id) & \
+                   (skel["HOUR"] >= start_h) & (skel["HOUR"] < end_h)
+            col = f"TX_VENT_{row['VENT_TYPE']}"
+            if col in skel.columns:
+                skel.loc[mask, col] = 1
+
+    tx_cols = [c for c in skel.columns if c.startswith("TX_")]
+    return skel[["ICUSTAY_ID", "HOUR"] + tx_cols]
+
+
 def compute_sofa_from_hourly(hourly):
-    """Approximate SOFA score from available hourly features."""
+    """
+    Approximate SOFA score from available hourly features.
+
+    Cardiovascular and renal components use treatment columns (TX_*) when
+    present, falling back to MAP-only / creatinine-only when not. This is
+    closer to the canonical Sepsis-3 SOFA than the v1 vitals-only version.
+    """
     sofa = pd.DataFrame(index=hourly.index)
     sofa["ICUSTAY_ID"] = hourly["ICUSTAY_ID"]
     sofa["HOUR"] = hourly["HOUR"]
     sofa["SOFA"] = 0
 
-    # Cardiovascular: MAP
+    # Cardiovascular: take max of MAP-based and pressor-based scores
+    cv_score = np.zeros(len(hourly), dtype=int)
     if "MAP" in hourly.columns:
-        sofa["SOFA"] += np.where(hourly["MAP"] < 70, 1, 0)
+        cv_score = np.maximum(cv_score, np.where(hourly["MAP"].fillna(99) < 70, 1, 0))
+    # Pressor ladder (mcg/kg/min for catecholamines)
+    if "TX_DOPAMINE_RATE" in hourly.columns:
+        dop = hourly["TX_DOPAMINE_RATE"].fillna(0).values
+        cv_score = np.maximum(cv_score, np.where(dop > 15, 4,
+                                          np.where(dop > 5, 3,
+                                          np.where(dop > 0, 2, 0))))
+    if "TX_NOREPI_RATE" in hourly.columns:
+        ne = hourly["TX_NOREPI_RATE"].fillna(0).values
+        cv_score = np.maximum(cv_score, np.where(ne > 0.1, 4,
+                                          np.where(ne > 0, 3, 0)))
+    if "TX_EPI_RATE" in hourly.columns:
+        ep = hourly["TX_EPI_RATE"].fillna(0).values
+        cv_score = np.maximum(cv_score, np.where(ep > 0.1, 4,
+                                          np.where(ep > 0, 3, 0)))
+    sofa["SOFA"] += cv_score
 
     # Respiration: PaO2/FiO2
     if "PO2" in hourly.columns and "FIO2" in hourly.columns:
@@ -259,13 +600,27 @@ def compute_sofa_from_hourly(hourly):
             [4, 3, 2, 1], default=0
         )
 
-    # Renal: Creatinine
+    # Renal: max of creatinine-based and 24h-urine-output-based scores
+    renal_score = np.zeros(len(hourly), dtype=int)
     if "CREATININE" in hourly.columns:
-        sofa["SOFA"] += np.select(
-            [hourly["CREATININE"] >= 5, hourly["CREATININE"] >= 3.5,
-             hourly["CREATININE"] >= 2, hourly["CREATININE"] >= 1.2],
+        cr = hourly["CREATININE"].fillna(0).values
+        renal_score = np.maximum(renal_score, np.select(
+            [cr >= 5, cr >= 3.5, cr >= 2, cr >= 1.2],
             [4, 3, 2, 1], default=0
+        ))
+    if "TX_URINE_ML" in hourly.columns:
+        # 24-hour rolling sum per stay (ordered by HOUR)
+        h_sorted = hourly.sort_values(["ICUSTAY_ID", "HOUR"])
+        rolling = (
+            h_sorted.groupby("ICUSTAY_ID")["TX_URINE_ML"]
+            .rolling(window=24, min_periods=1).sum()
+            .reset_index(level=0, drop=True)
         )
+        # Re-align to original index order
+        urine_24h = pd.Series(rolling.values, index=h_sorted.index).reindex(hourly.index).values
+        renal_score = np.maximum(renal_score, np.where(urine_24h < 200, 4,
+                                                np.where(urine_24h < 500, 3, 0)))
+    sofa["SOFA"] += renal_score
 
     return sofa
 
@@ -296,10 +651,23 @@ def extract_sepsis_cohort(config_path="config/paths.yaml"):
 
     # 3. Extract observations and build timelines
     observations = compute_sofa_components(mimic_dir, cohort)
+
+    # 3b. Extract clinical treatments (vasopressors, urine output, ventilation)
+    cohort_icu_ids = set(cohort["ICUSTAY_ID"].dropna().astype(int))
+    vaso = load_vasopressors(mimic_dir, cohort_icu_ids)
+    urine = load_urine_output(mimic_dir, cohort_icu_ids)
+    vent = load_ventilation(mimic_dir, cohort_icu_ids)
+    treatments = aggregate_treatments_hourly(
+        vaso, urine, vent, cohort, max_hours=cfg["cohort"]["max_hours"]
+    )
+    logger.info(f"Treatments aggregated: {len(treatments)} (stay, hour) rows, "
+                f"{(treatments['TX_VASO_ANY'] > 0).sum()} pressor-active rows")
+
     hourly = build_hourly_timelines(
         observations, cohort,
         max_hours=cfg["cohort"]["max_hours"],
         bin_minutes=cfg["cohort"]["bin_window_minutes"],
+        treatments=treatments,
     )
 
     # 4. Compute SOFA and identify sepsis onset

@@ -8,9 +8,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-from src.bias.anchoring_metrics import compute_elasticity, compute_explanation_drift
+from src.bias.anchoring_metrics import (
+    compute_elasticity,
+    compute_explanation_drift,
+    compute_treatment_responsive_elasticity,
+)
 
 results_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/results")
+# Optional second arg: path to hourly_timelines.parquet (for treatment-responsive elasticity)
+hourly_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
 
 # Find prediction files
 chrono_files = list(results_dir.glob("predictions_chronological_*single_turn*.jsonl"))
@@ -41,6 +47,29 @@ for label, files in [("chronological", chrono_files), ("reverse", reverse_files)
     print(f"  Median |delta_risk| per step: {df['abs_delta_risk'].median():.4f}")
     print(f"  Patients with near-zero updates (<0.01): "
           f"{(df.groupby('icustay_id')['abs_delta_risk'].mean() < 0.01).sum()}")
+
+# === Treatment-Responsive Elasticity ===
+if hourly_path is not None and hourly_path.exists():
+    print("\n" + "=" * 50)
+    print("TREATMENT-RESPONSIVE ELASTICITY")
+    print("=" * 50)
+    for label, files in [("chronological", chrono_files), ("reverse", reverse_files)]:
+        if not files:
+            continue
+        filepath = files[0]
+        print(f"\n--- {label}: {filepath.name} ---")
+        summary = compute_treatment_responsive_elasticity(str(filepath), str(hourly_path))
+        if not summary:
+            print("  No treatment events found (cohort may be vitals-only).")
+            continue
+        for k, v in summary.items():
+            if isinstance(v, float):
+                print(f"  {k}: {v:.4f}")
+            else:
+                print(f"  {k}: {v}")
+else:
+    print("\n(Skipping treatment-responsive elasticity — pass hourly_timelines.parquet "
+          "as 2nd arg to enable.)")
 
 # === Explanation Drift ===
 print("\n" + "=" * 50)

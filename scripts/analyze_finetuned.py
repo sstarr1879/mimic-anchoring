@@ -7,11 +7,14 @@ from src.bias.anchoring_metrics import (
     compute_ordering_effect,
     compute_elasticity,
     compute_explanation_drift,
+    compute_treatment_responsive_elasticity,
 )
 
 
 def main():
     results_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/results")
+    # Optional 2nd arg: hourly_timelines.parquet for treatment-responsive elasticity
+    hourly_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
 
     chrono = results_dir / "predictions_chronological_multiturn_llama3.1-sepsis_8b_finetuned.jsonl"
     reverse = results_dir / "predictions_reverse_multiturn_llama3.1-sepsis_8b_finetuned.jsonl"
@@ -38,6 +41,25 @@ def main():
         el.to_csv(out, index=False)
         print(f"  Saved: {out.name}  (n={len(el)})")
         print(f"  Mean |delta_risk|: {el['abs_delta_risk'].mean():.4f}")
+
+    # Treatment-responsive elasticity (both orderings)
+    if hourly_path is not None and hourly_path.exists():
+        for ordering, path in [("chronological", chrono), ("reverse", reverse)]:
+            if not path.exists():
+                continue
+            print(f"\n--- Treatment-Responsive Elasticity ({suffix}, {ordering}) ---")
+            summary = compute_treatment_responsive_elasticity(str(path), str(hourly_path))
+            if not summary:
+                print("  No treatment events (cohort may be vitals-only).")
+                continue
+            for k, v in summary.items():
+                if isinstance(v, float):
+                    print(f"  {k}: {v:.4f}")
+                else:
+                    print(f"  {k}: {v}")
+    else:
+        print("\n(Skipping treatment-responsive elasticity — pass hourly_timelines.parquet "
+              "as 2nd arg to enable.)")
 
     # Explanation drift (both orderings)
     for ordering, path in [("chronological", chrono), ("reverse", reverse)]:
