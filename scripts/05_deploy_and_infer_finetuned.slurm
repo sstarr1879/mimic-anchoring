@@ -5,7 +5,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:v100:1
 #SBATCH --partition=gpu
 
 # Phase 4: Deploy fine-tuned model to Ollama and run anchoring experiments

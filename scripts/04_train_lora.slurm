@@ -5,7 +5,7 @@
 #SBATCH --time=12:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:v100:1
 #SBATCH --partition=gpu
 
 # Phase 3b: LoRA SFT training
