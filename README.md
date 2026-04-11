@@ -76,14 +76,29 @@ The **context reset** intervention truncates conversation history every N hours,
 
 > **Metavision-only:** Treatment columns are extracted from the Metavision-era tables (`*_MV`) only. Carevue-era patients (~2001–2008) will have NaN/zero in `TX_*` columns and are effectively excluded from treatment-conditioned analyses. This is a deliberate trade-off — the MV schema is unified and the vasopressor ITEMIDs are well-documented, while the CV equivalent requires reconciling two different rate-encoding conventions.
 
-### Treatments vs. Interventions — naming distinction
+### How treatments enter the pipeline
 
-Two distinct concepts in this codebase use overlapping vocabulary; they are intentionally separated:
+Treatments live as `TX_*` columns on `hourly_timelines.parquet` — same `(ICUSTAY_ID, HOUR)` grid as vitals/labs. They flow through four stages:
 
-- **Treatments** (clinical care delivered to the patient) live in `hourly_timelines.parquet` as columns prefixed `TX_*` and are surfaced to the model in prompts and expert traces. They feed the new `compute_treatment_responsive_elasticity` metric, which measures whether the model updates its risk estimate when a vasopressor is started, escalated, weaned, or stopped (and similarly for intubation/extubation). Anchored models show **asymmetric** elasticity — they update on worsening evidence but suppress updates on improving evidence — which is the signature de-anchoring failure.
-- **Interventions** (algorithmic debiasing strategies) live under `src/interventions/` and refer to context resets and re-prompting applied at inference time to break trajectory lock-in. The `intervention` field in saved prediction JSONL files refers to *this* meaning.
+1. **Extraction** — `extract_cohort.py` adds `load_vasopressors`, `load_urine_output`, `load_ventilation`. Pressor rates are normalized to mcg/kg/min; vent intervals become hourly booleans.
+2. **SOFA labels** — cardiovascular component uses the canonical pressor ladder; renal component uses a 24h rolling sum of urine output. Patients on pressors who were invisible to the v1 SOFA now contribute, which shifts `sepsis_onset.parquet` and the SFT risk targets.
+3. **Prompts** — `format_hour_observations` renders `TX_*` values **sparsely**: only on hours where a treatment is *started*, *escalated*, *weaned*, or *stopped*. Stable continuation is implicit. Auto-disabled under shuffled ordering.
+4. **SFT expert traces** — `generate_expert_response` detects treatment transitions and frames downward revisions as **response to therapy**, not "I was wrong" (*"Patient responding to treatment: norepinephrine weaning (0.15 → 0.06). Improvement reflects effective intervention, not spontaneous recovery."*). This is the central de-anchoring signal.
 
-In short: **treatments** are something the patient receives; **interventions** are something we do to the model.
+A new metric, `compute_treatment_responsive_elasticity`, stratifies `|Δrisk|` by whether the prior hour saw a treatment transition, and reports an **asymmetry ratio** (worsening / improving). Anchored models update on worsening evidence but suppress updates on improving evidence — ratio ≫ 1 is the signature.
+
+### Treatments vs. interventions — naming distinction
+
+- **Treatments** — clinical care the patient receives (`TX_*` columns, expert traces, treatment-responsive elasticity). Live in the data layer.
+- **Interventions** — algorithmic debiasing applied to the *model* (`src/interventions/`: context reset, re-prompting). The `intervention` field in saved prediction JSONLs refers to this meaning.
+
+### Treatments and the ordering test
+
+Treatments don't break the three orderings, but each tests something slightly different now:
+
+- **Chronological** — canonical condition. Only ordering on which to report treatment-responsive elasticity as a primary result.
+- **Reverse** — column values aren't transformed when rows flip, so a real "norepinephrine weaned" reads as "norepinephrine started" in the reversed prompt. After SFT the model reads this as worsening and revises up. **This is exactly the counterfactual test** — a non-anchored model should still converge to the same final risk; an anchored model will diverge more sharply now that treatment events are high-information. Reverse becomes a *sharper* detector, not a broken one.
+- **Shuffled** — sparse rendering auto-disables. Treatment-responsive elasticity should not be reported here (consecutive clinical hours weren't seen consecutively).
 
 ## Project Structure
 
