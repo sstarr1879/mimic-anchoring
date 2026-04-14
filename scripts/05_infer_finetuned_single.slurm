@@ -2,7 +2,7 @@
 #SBATCH --job-name=mimic-ft-infer
 #SBATCH --output=logs/05_infer_ft_%j.out
 #SBATCH --error=logs/05_infer_ft_%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time=72:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:v100:1

@@ -125,35 +125,49 @@ def run_batch(config_path="config/paths.yaml", ordering="chronological",
     # Pre-compute sepsis lookup
     sepsis_lookup = dict(zip(sepsis["ICUSTAY_ID"], sepsis["SEPSIS_ONSET_HOUR"]))
 
-    # Run inference
-    all_results = []
-    for icustay_id in tqdm(sample_ids, desc=f"Inference ({ordering}, {mode})"):
-        patient_data = hourly[hourly["ICUSTAY_ID"] == icustay_id]
-        if len(patient_data) < 3:
-            continue
-
-        patient_results = run_fn(client, patient_data, ordering)
-        has_sepsis = icustay_id in sepsis_lookup
-        onset_hour = int(sepsis_lookup[icustay_id]) if has_sepsis else None
-
-        for r in patient_results:
-            r["icustay_id"] = int(icustay_id)
-            r["has_sepsis"] = has_sepsis
-            r["sepsis_onset_hour"] = onset_hour
-
-        all_results.extend(patient_results)
-
-    # Save results
+    # Output file — write incrementally so partial results survive timeouts
     model_tag = model.replace(":", "_")
     fname = f"predictions_{ordering}_{mode}_{model_tag}{output_suffix}.jsonl"
     outpath = results_dir / fname
-    with open(outpath, "w") as f:
-        for r in all_results:
-            row = {k: v for k, v in r.items() if k != "full_response"}
-            f.write(json.dumps(row, default=lambda x: int(x) if hasattr(x, 'item') else str(x)) + "\n")
 
-    logger.info(f"Saved {len(all_results)} predictions to {outpath}")
-    return all_results
+    # Resume support: skip patients already in the output file
+    completed_ids = set()
+    if outpath.exists():
+        with open(outpath) as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                    completed_ids.add(row["icustay_id"])
+                except (json.JSONDecodeError, KeyError):
+                    pass
+        logger.info(f"Resuming: {len(completed_ids)} patients already completed in {outpath}")
+
+    # Run inference, appending after each patient
+    total_written = len(completed_ids)
+    with open(outpath, "a") as outfile:
+        for icustay_id in tqdm(sample_ids, desc=f"Inference ({ordering}, {mode})"):
+            if int(icustay_id) in completed_ids:
+                continue
+
+            patient_data = hourly[hourly["ICUSTAY_ID"] == icustay_id]
+            if len(patient_data) < 3:
+                continue
+
+            patient_results = run_fn(client, patient_data, ordering)
+            has_sepsis = icustay_id in sepsis_lookup
+            onset_hour = int(sepsis_lookup[icustay_id]) if has_sepsis else None
+
+            for r in patient_results:
+                r["icustay_id"] = int(icustay_id)
+                r["has_sepsis"] = has_sepsis
+                r["sepsis_onset_hour"] = onset_hour
+                row = {k: v for k, v in r.items() if k != "full_response"}
+                outfile.write(json.dumps(row, default=lambda x: int(x) if hasattr(x, 'item') else str(x)) + "\n")
+            outfile.flush()
+            total_written += 1
+
+    logger.info(f"Done. {total_written} patients total in {outpath}")
+    return []
 
 
 if __name__ == "__main__":
