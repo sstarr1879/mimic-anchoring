@@ -2,3 +2,17 @@ ollama_models/
 *.sif
 venv/
 /data/
+
+# Analysis outputs and large artifacts
+results/
+*.csv
+*.jsonl
+*.parquet
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store

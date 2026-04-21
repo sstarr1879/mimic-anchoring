@@ -78,6 +78,38 @@ def compute_ordering_effect(chrono_path, reverse_path, shuffled_path=None):
         shuffled = load_predictions(shuffled_path)
         shuffled_final = get_final_predictions(shuffled).rename(columns={"risk": "risk_shuffled"})
         merged = merged.merge(shuffled_final[["icustay_id", "risk_shuffled"]], on="icustay_id")
+        merged["ordering_effect_chrono_shuffled"] = (
+            merged["risk_chrono"] - merged["risk_shuffled"]
+        ).abs()
+        merged["ordering_effect_reverse_shuffled"] = (
+            merged["risk_reverse"] - merged["risk_shuffled"]
+        ).abs()
+
+        # Reverse-overfit check: if SFT only taught the reverse-order update pattern,
+        # shuffled final risks will diverge from reverse more than from chrono.
+        sepsis_shuf = merged[merged["has_sepsis"]].dropna(
+            subset=["risk_chrono", "risk_reverse", "risk_shuffled"]
+        )
+        if len(sepsis_shuf) > 0:
+            t_sr, p_sr = stats.ttest_rel(
+                sepsis_shuf["risk_shuffled"], sepsis_shuf["risk_reverse"]
+            )
+            t_sc, p_sc = stats.ttest_rel(
+                sepsis_shuf["risk_shuffled"], sepsis_shuf["risk_chrono"]
+            )
+            logger.info(
+                f"Paired t-test shuffled vs reverse (sepsis): t={t_sr:.3f}, p={p_sr:.4f}"
+            )
+            logger.info(
+                f"Paired t-test shuffled vs chrono  (sepsis): t={t_sc:.3f}, p={p_sc:.4f}"
+            )
+            logger.info(f"Mean shuffled risk: {sepsis_shuf['risk_shuffled'].mean():.3f}")
+            logger.info(
+                f"Mean |chrono-shuffled|: {merged['ordering_effect_chrono_shuffled'].mean():.4f}"
+            )
+            logger.info(
+                f"Mean |reverse-shuffled|: {merged['ordering_effect_reverse_shuffled'].mean():.4f}"
+            )
 
     logger.info(f"Mean ordering effect: {merged['ordering_effect'].mean():.4f}")
     logger.info(f"Median ordering effect: {merged['ordering_effect'].median():.4f}")
@@ -127,6 +159,9 @@ def compute_elasticity(predictions_path):
             })
 
     df = pd.DataFrame(results)
+    if len(df) == 0:
+        logger.warning(f"No elasticity rows computed from {predictions_path} — file may be empty or single-row-per-patient.")
+        return df
 
     # Key metric: elasticity around sepsis onset
     sepsis = df[df["has_sepsis"] & df["sepsis_onset_hour"].notna()].copy()
